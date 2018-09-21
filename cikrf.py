@@ -1,7 +1,7 @@
 from asks            import Session
 from asks.errors     import AsksException
 from bs4             import BeautifulSoup, Tag
-from collections     import namedtuple
+from collections     import OrderedDict, namedtuple
 from collections.abc import Iterable
 from datetime        import date as Date, datetime as DateTime, timedelta as TimeDelta
 from enum            import Enum
@@ -112,9 +112,10 @@ class Commission:
 		ancs = (row.find('a')
 		        for row in capt.find_parent('tr').next_siblings
 		        if isinstance(row, Tag))
-		return {parse_qs(urlsplit(a['href']).query)['type'][0]:
-		          normalize(a.string)
-		        for a in ancs} # FIXME formatting; OrderedDict?
+		return(OrderedDict
+			((parse_qs(urlsplit(a['href']).query)['type'][0],
+			  normalize(a.string))
+			 for a in ancs))
 
 	@staticmethod
 	def _single_result_data(table):
@@ -144,8 +145,10 @@ class Commission:
 		datas = ([h._replace(value=int(v.find(string=True).string))
 		          for h, v in zip(head, col)]
 		         for col in zip(*(row for i,row in enumerate(rows) if i not in seps)))
-		return {c: Report(records=d[:seps[1]-1], results=d[seps[1]-1:])
-		        for c, d in zip(comms, datas)} # FIXME OrderedDict?
+		return(OrderedDict
+			((c, Report(records=d[:seps[1]-1],
+			            results=d[seps[1]-1:]))
+			 for c, d in zip(comms, datas)))
 
 	async def _directory(self, session):
 		# FIXME don't actually need the directory (most of the time)
