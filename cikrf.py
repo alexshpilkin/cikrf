@@ -43,7 +43,7 @@ def matches(string):
 	def match(s): return s and normalize(s).casefold() == string
 	return match
 
-def some(*matches):
+def disj(*matches):
 	matches = list(matches)
 	def match(s): return any(m(s) for m in matches)
 	return match
@@ -114,10 +114,14 @@ class Commission:
 
 	async def name(self, session):
 		page = await self._directory(session)
-		capt = page.find(string=some(matches('Наименование комиссии'),
+		capt = page.find(string=disj(matches('Наименование комиссии'),
 		                             matches('Наименование Избирательной комиссии')))
-		return normalize(doc.find('table', height='80%').find('td')
-		                    .find_all('a')[-1].string)
+		if capt is None:
+			assert nodata(page)
+			return None
+		return normalize(capt.find_parent('td')
+		                     .find_next_sibling('td')
+		                     .string)
 
 	async def path(self, session):
 		return self._ppath + [await self.name(session)]
@@ -215,6 +219,7 @@ class Election(Commission):
 
 # FIXME test code
 
+from os.path import exists
 from traceback import print_exc
 
 async def main():
@@ -224,18 +229,16 @@ async def main():
 #		'end': Date(2004,1,1),
 #		'scope': Scope.COUNTRY,
 	}
+	filename = 'elections.jsonseq'
 
 	async with Session(connections=25) as session:
-#		els = [e async for e in Election.search(session, **params)]
+		if not exists(filename):
+			with open(filename, 'w', encoding='utf-8') as fp:
+				async for e in Election.search(session, **params):
+					dump([e.tojson()], fp, flush=True, ensure_ascii=False, indent=2)
 
-#		with open('elections.jsonseq', 'w', encoding='utf-8') as fp:
-#			async for e in Election.search(session, **params):
-#				dump([e.tojson()], fp, flush=True, ensure_ascii=False, indent=2)
-#		return
-
-		with open('elections.jsonseq', 'r') as fp:
-			els = list(Election.fromjson(obj)
-			           for obj in load(fp))
+		with open(filename, 'r') as fp:
+			els = list(Election.fromjson(obj) for obj in load(fp))
 
 #		pprint(els, width=80)
 #		return
@@ -249,9 +252,10 @@ async def main():
 			print(e.url, flush=True)
 			while True:
 				try: print(await e.date(session),
-				      e.title,
-				      pformat(await e.result_types(session), width=w),
-				      sep='\n', end='\n\n', flush=True)
+				           e.title,
+				           await e.name(session),
+				           pformat(await e.result_types(session), width=w),
+				           sep='\n', end='\n\n', flush=True)
 				except Exception:
 					print_exc()
 					input()
