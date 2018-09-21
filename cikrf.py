@@ -1,6 +1,7 @@
 from asks            import Session
 from asks.errors     import AsksException
 from bs4             import BeautifulSoup, Tag
+from collections     import namedtuple
 from collections.abc import Iterable
 from datetime        import date as Date, datetime as DateTime, timedelta as TimeDelta
 from enum            import Enum
@@ -65,6 +66,9 @@ class Hints:
 		self.__dict__[name] = None
 		return self.__dict__[name]
 
+Report = namedtuple('Report', ['records', 'results'])
+Row    = namedtuple('Row',    ['number', 'name', 'value'])
+
 class Commission:
 	__slots__ = ['url', '_ppath', '_hints', '_page', '_children']
 
@@ -96,7 +100,7 @@ class Commission:
 			await sleep(0)
 		return self._page[type]
 
-	async def result_types(self, session):
+	async def _result_types(self, session):
 		page = await self.page(session, '0')
 		capt = page.find(string=matches('Результаты выборов'))
 		if capt is None:
@@ -108,7 +112,39 @@ class Commission:
 		        for row in capt.find_parent('tr').next_siblings
 		        if isinstance(row, Tag))
 		return {parse_qs(urlsplit(a['href']).query)['type'][0]:
-		        str(a.string) for a in ancs} # FIXME
+		          normalize(a.string)
+		        for a in ancs} # FIXME formatting; OrderedDict?
+
+	@staticmethod
+	def _single_result_data(table):
+		rows = [tr('td') for tr in table('tr')]
+		assert all(len(row) in {2,3} for row in rows)
+		seps = [i for i, row in enumerate(rows) if len(row) == 2]
+		data = [Row(number=normalize(row[0].string),
+		            name=normalize(row[1].string),
+		            value=int(row[2].find(string=True).string))
+		        for row in rows if len(row) == 3]
+		return seps, data
+
+	async def _single_result(self, session, type): # FIXME version
+		tabs = (await self.page(session, type))(cellpadding='2')
+		assert len(tabs) == 1
+		seps, data = self._single_result_data(tabs[0])
+		return Report(records=data[:seps[0]], results=data[seps[0]:])
+
+	async def _aggregate_results(self, session, type):
+		tabs = (await self.page(session, type))(cellpadding='2')
+		assert len(tabs) == 2
+		# Left table contains headers
+		seps, head = self._single_result_data(tabs[0])
+		# Right table contains data per commission
+		rows = [tr('td') for tr in tabs[1]('tr')]
+		comms = (normalize(td.find('a').string) for td in rows[0])
+		datas = ([h._replace(value=int(v.find(string=True).string))
+		          for h, v in zip(head, col)]
+		         for col in zip(*(row for i,row in enumerate(rows) if i not in seps)))
+		return {c: Report(records=d[:seps[1]-1], results=d[seps[1]-1:])
+		        for c, d in zip(comms, datas)} # FIXME OrderedDict?
 
 	async def _directory(self, session):
 		# FIXME don't actually need the directory (most of the time)
@@ -176,7 +212,7 @@ class Election(Commission):
 
 	@classmethod
 	async def search(cls, session, start=Date(1991, 6, 12), end=None, *,
-                         scope=list(Scope)): # FIXME parameter order?
+	                 scope=list(Scope)): # FIXME parameter order?
 
 		if end is None:
 			end = Date.today() # FIXME reconsider this default?
@@ -221,7 +257,9 @@ class Election(Commission):
 
 # FIXME test code
 
+from collections import defaultdict as DefaultDict
 from os.path import exists
+from random import seed, shuffle
 from traceback import print_exc
 
 async def main():
@@ -234,6 +272,12 @@ async def main():
 	filename = 'elections.jsonseq'
 
 	async with Session(connections=25) as session:
+		elec = Election('http://www.vybory.izbirkom.ru/region/izbirkom?action=show&global=1&vrn=100100095619&region=0&prver=0&pronetvd=0&sub_region=99')
+		pprint(dict((await elec._single_result(session, '242'))._asdict()), width=w)
+		print()
+		pprint({k: dict(v._asdict()) for k, v in (await elec._aggregate_results(session, '233')).items()}, width=w)
+		return
+
 		if not exists(filename):
 			with open(filename, 'w', encoding='utf-8') as fp:
 				async for e in Election.search(session, **params):
@@ -242,33 +286,59 @@ async def main():
 		with open(filename, 'r') as fp:
 			els = list(Election.fromjson(obj) for obj in load(fp))
 
-#		pprint(els, width=80)
-#		return
+		seed(57)
+		shuffle(els)
 
-		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=477404472842&region=77&prver=0&pronetvd=null&sub_region=99"
-		for i, e in enumerate(els):
-			if e.url == url: break
-		els = els[i:]
+#		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
+#		for i, e in enumerate(els):
+#			if e.url == url: break
+#		els = els[i:]
 
-		for e in els:
-			print(e.url, flush=True)
-			while True:
-				try: print(await e.date(session),
-				           e.title,
-				           await e.name(session),
-				           pformat(await e.result_types(session), width=w),
-				           sep='\n', end='\n\n', flush=True)
-				except Exception:
-					print_exc()
-					input()
-				else:
-					break
+		queue = Queue(0)
+		async def visit(comm):
+			await queue.put(await comm._result_types(session))
+			print(comm.title)
+
+		count = 0
+		types = DefaultDict(set)
+		tsets = set()
+		try:
+			async with open_nursery() as nursery:
+				for e in els:
+					nursery.start_soon(visit, e)
+					await sleep(0)
+				while nursery.child_tasks:
+					ts = await queue.get()
+					for k, v in ts.items(): types[k].add(v)
+					tsets.add(frozenset(ts.keys()))
+					count += 1
+		finally:
+			pprint(dict(types), width=w)
+			pprint([list(s) for s in tsets], width = w)
+			print(f'{count} of {len(els)}')
+
+#		for e in els:
+#			print(e.url, flush=True)
+#			while True:
+#				try: print(await e.date(session),
+#				           e.title,
+#				           await e.name(session),
+#				           pformat(await e._result_types(session), width=w),
+#				           sep='\n', end='\n\n', flush=True)
+#				except Exception:
+#					print_exc()
+#					input()
+#				else:
+#					break
+#			ts = await e._result_types(session)
+#			assert (bool(len(ts) == 2*len([t for t in ts.values() if t.startswith("Сводн")])) !=
+#			        (bool("еферендум" in e.title or "Опрос" in e.title) and not nodata(await e.page(session, '0'))))
 
 #		root  = els[0]
 #		queue = Queue(0)
 #		async def walk(comm):
 #			print('/'.join(await comm.path(session)),
-#			      pformat(await comm.result_types(session), width=w),
+#			      pformat(await comm._result_types(session), width=w),
 #			      sep='\n', flush=True)
 #			await queue.put(await comm.children(session))
 #		async with open_nursery() as nursery:
@@ -277,5 +347,6 @@ async def main():
 #				for comm in await queue.get():
 #					nursery.start_soon(walk, comm)
 
-init_asks('trio')
-run(main)
+if __name__ == '__main__':
+	init_asks('trio')
+	run(main)
