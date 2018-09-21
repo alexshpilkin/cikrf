@@ -85,6 +85,8 @@ class Commission:
 				try: res = await session.get(url)
 				except AsksException as e:
 					print('ERR', url, e, flush=True) # FIXME
+				except OSError as e:
+					print('ERR', url, e, flush=True) # FIXME
 				else:
 					if res.status_code // 100 == 2: break
 					else: print(res.status_code, url, res.reason_phrase, flush=True) # FIXME
