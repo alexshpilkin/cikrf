@@ -134,21 +134,6 @@ class Commission:
 			await sleep(0)
 		return self._children
 
-#	async def _collect(self, session, path, url):
-#		trace('LIST ' + '/'.join(path))
-#		yield Link(url, path)
-#		async with session.get(url) as res:
-#			soup = BeautifulSoup(await res.text(), PARSER)
-#		trace('DOWN ' + '/'.join(path))
-#		children = (self._collect(session,
-#		                          path + [maybe(normalize, o.string)],
-#		                          o['value'])
-#		            for o in soup('option') if o.attrs.get('value'))
-#		async with merge(*children).stream() as stream:
-#			async for link in stream:
-#				yield link
-#		trace('DONE ' + '/'.join(path))
-
 class Election(Commission):
 	__slots__ = ['title', 'place', 'root']
 
@@ -272,20 +257,19 @@ async def main():
 					input()
 				else:
 					break
-		return
 
-		root  = els[0]
-		queue = Queue(0)
-		async def walk(comm):
-			print('/'.join(await comm.path(session)),
-			      pformat(await comm.result_types(session), width=w),
-			      sep='\n', flush=True)
-			await queue.put(await comm.children(session))
-		async with open_nursery() as nursery:
-			nursery.start_soon(walk, root)
-			while nursery.child_tasks:
-				for comm in await queue.get():
-					nursery.start_soon(walk, comm)
+#		root  = els[0]
+#		queue = Queue(0)
+#		async def walk(comm):
+#			print('/'.join(await comm.path(session)),
+#			      pformat(await comm.result_types(session), width=w),
+#			      sep='\n', flush=True)
+#			await queue.put(await comm.children(session))
+#		async with open_nursery() as nursery:
+#			nursery.start_soon(walk, root)
+#			while nursery.child_tasks:
+#				for comm in await queue.get():
+#					nursery.start_soon(walk, comm)
 
 init_asks('trio')
 run(main)
