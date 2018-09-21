@@ -95,7 +95,8 @@ class Commission:
 					if res.status_code // 100 == 2: break
 					else: print(res.status_code, url, res.reason_phrase, flush=True) # FIXME
 				await sleep(0) # FIXME back off?
-			self._page[type] = BeautifulSoup(res.text, PARSER)
+			encoding = res.encoding.lower() if 'charset' in res.headers.get('Content-Type','') else None # FIXME unreliable (change in upstream asks?)
+			self._page[type] = BeautifulSoup(res.content, PARSER, from_encoding=encoding)
 		else:
 			await sleep(0)
 		return self._page[type]
@@ -152,9 +153,18 @@ class Commission:
 
 	async def name(self, session):
 		page = await self._directory(session)
-		capt = page.find(string=disj(matches('Наименование комиссии'),
-		                             matches('Наименование Избирательной комиссии')))
-		if capt is None:
+		crumbs = page.find('table', height='80%').find('td')('a')
+		if len(crumbs) > 0:
+			# NB. When the crumbs are missing from the parent, the
+			# text in crumbs[:-1] can _differ_ from self._ppath
+			# FIXME Example: http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=485400692143&region=85&prver=0&pronetvd=0
+			return normalize(crumbs[-1].string)
+
+		page = await self.page(session, '0')
+		caption = page.find(string=disj
+			(matches('Наименование комиссии'),
+			 matches('Наименование избирательной комиссии')))
+		if caption is None:
 			assert nodata(page)
 			return None
 		return normalize(capt.find_parent('td')
@@ -272,11 +282,11 @@ async def main():
 	filename = 'elections.jsonseq'
 
 	async with Session(connections=25) as session:
-		elec = Election('http://www.vybory.izbirkom.ru/region/izbirkom?action=show&global=1&vrn=100100095619&region=0&prver=0&pronetvd=0&sub_region=99')
-		pprint(dict((await elec._single_result(session, '242'))._asdict()), width=w)
-		print()
-		pprint({k: dict(v._asdict()) for k, v in (await elec._aggregate_results(session, '233')).items()}, width=w)
-		return
+#		elec = Election('http://www.vybory.izbirkom.ru/region/izbirkom?action=show&global=1&vrn=100100095619&region=0&prver=0&pronetvd=0&sub_region=99')
+#		pprint(dict((await elec._single_result(session, '242'))._asdict()), width=w)
+#		print()
+#		pprint({k: dict(v._asdict()) for k, v in (await elec._aggregate_results(session, '233')).items()}, width=w)
+#		return
 
 		if not exists(filename):
 			with open(filename, 'w', encoding='utf-8') as fp:
@@ -287,52 +297,52 @@ async def main():
 			els = list(Election.fromjson(obj) for obj in load(fp))
 
 		seed(57)
-		shuffle(els)
+#		shuffle(els)
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
 #		for i, e in enumerate(els):
 #			if e.url == url: break
 #		els = els[i:]
 
-		queue = Queue(0)
-		async def visit(comm):
-			await queue.put(await comm._result_types(session))
-			print(comm.title)
+#		queue = Queue(0)
+#		async def visit(comm):
+#			await queue.put(await comm._result_types(session))
+#			print(comm.title)
 
-		count = 0
-		types = DefaultDict(set)
-		tsets = set()
-		try:
-			async with open_nursery() as nursery:
-				for e in els:
-					nursery.start_soon(visit, e)
-					await sleep(0)
-				while nursery.child_tasks:
-					ts = await queue.get()
-					for k, v in ts.items(): types[k].add(v)
-					tsets.add(frozenset(ts.keys()))
-					count += 1
-		finally:
-			pprint(dict(types), width=w)
-			pprint([list(s) for s in tsets], width = w)
-			print(f'{count} of {len(els)}')
+#		count = 0
+#		types = DefaultDict(set)
+#		tsets = set()
+#		try:
+#			async with open_nursery() as nursery:
+#				for e in els:
+#					nursery.start_soon(visit, e)
+#					await sleep(0)
+#				while nursery.child_tasks:
+#					ts = await queue.get()
+#					for k, v in ts.items(): types[k].add(v)
+#					tsets.add(frozenset(ts.keys()))
+#					count += 1
+#		finally:
+#			pprint(dict(types), width=w)
+#			pprint([list(s) for s in tsets], width = w)
+#			print(f'{count} of {len(els)}')
 
-#		for e in els:
-#			print(e.url, flush=True)
-#			while True:
-#				try: print(await e.date(session),
-#				           e.title,
-#				           await e.name(session),
-#				           pformat(await e._result_types(session), width=w),
-#				           sep='\n', end='\n\n', flush=True)
-#				except Exception:
-#					print_exc()
-#					input()
-#				else:
-#					break
-#			ts = await e._result_types(session)
-#			assert (bool(len(ts) == 2*len([t for t in ts.values() if t.startswith("Сводн")])) !=
-#			        (bool("еферендум" in e.title or "Опрос" in e.title) and not nodata(await e.page(session, '0'))))
+		for e in els:
+			print(e.url, flush=True)
+			while True:
+				try: print(await e.date(session),
+				           e.title,
+				           await e.name(session),
+				           #pformat(await e._result_types(session), width=w),
+				           sep='\n', end='\n\n', flush=True)
+				except Exception:
+					print_exc()
+					if input('Retry? [YN] ').lower().startswith('n'): break
+				else:
+					break
+			#ts = await e._result_types(session)
+			#assert (bool(len(ts) == 2*len([t for t in ts.values() if t.startswith("Сводн")])) !=
+			#        (bool("еферендум" in e.title or "Опрос" in e.title) and not nodata(await e.page(session, '0'))))
 
 #		root  = els[0]
 #		queue = Queue(0)
