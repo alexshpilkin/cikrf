@@ -61,10 +61,8 @@ class Scope(Enum):
 	# SETTLMNT FIXME
 
 class Hints:
-	def __getattr__(self, name):
-		assert name != '__dict__'
-		self.__dict__[name] = None
-		return self.__dict__[name]
+	def __init__(self):
+		self.depth = None
 
 Report = namedtuple('Report', ['records', 'results'])
 Row    = namedtuple('Row',    ['number', 'name', 'value'])
@@ -161,6 +159,7 @@ class Commission:
 			# NB. When the crumbs are missing from the parent, the
 			# text in crumbs[:-1] can _differ_ from self._ppath
 			# FIXME Example: http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=485400692143&region=85&prver=0&pronetvd=0
+			assert len(crumbs)-1 == len(self._ppath)
 			return normalize(crumbs[-1].string)
 
 		page = await self.page(session, '0')
@@ -178,13 +177,24 @@ class Commission:
 		return self._ppath + [await self.name(session)]
 
 	async def children(self, session):
-		if self._children is None:
-			opts = (await self._directory(session))('option')
+		if len(self._ppath)+1 == self._hints.depth:
+			return []
+		elif self._children is None:
+			page = await self._directory(session)
 			self._children = \
 				[Commission(urljoin(self.url, o['value']),
 				            await self.path(session),
 				            self._hints)
-				 for o in opts if o.attrs.get('value')]
+				 for o in page('option')
+				 if o.attrs.get('value')]
+			if not self._children:
+				assert page.find(string=matches
+					("нет отчета по навигации или же это "
+					 "конечный твд == уик"))
+				if self._hints.depth is None:
+					self._hints.depth = len(self._ppath)+1
+				assert(self._hints.depth is None or
+				       self._hints.depth == len(self._ppath)+1)
 		else:
 			await sleep(0)
 		return self._children
