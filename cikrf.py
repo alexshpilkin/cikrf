@@ -5,7 +5,7 @@ from collections     import OrderedDict, namedtuple
 from collections.abc import Iterable
 from datetime        import date as Date, datetime as DateTime
 from enum            import Enum
-from jsonseq         import dump, load
+from simplejsonseq   import dump, load
 from trio            import BrokenStreamError, Queue, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
