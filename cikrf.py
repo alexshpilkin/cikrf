@@ -3,25 +3,13 @@ from asks.errors     import AsksException
 from bs4             import BeautifulSoup, Tag
 from collections     import OrderedDict, namedtuple
 from collections.abc import Iterable
-from datetime        import date as Date, datetime as DateTime, timedelta as TimeDelta
+from datetime        import date as Date, datetime as DateTime
 from enum            import Enum
 from jsonseq         import dump, load
 from trio            import Queue, open_nursery, run, sleep
-from types           import MethodType
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
-# FIXME debug imports
-from asks import init as init_asks
-from pprint import pprint, pformat
-from shutil import get_terminal_size
-from sys import stdout, stderr
-from textwrap import shorten
-
 PARSER = 'html5lib'
-
-columns = 1000 #columns = get_terminal_size().columns # FIXME
-def trace(string):
-	print(shorten(string, columns, placeholder='...'), file=stderr, flush=True)
 
 def urladjust(url, params=dict(), **named):
 	parts = urlsplit(url)
@@ -282,9 +270,13 @@ class Election(Commission):
 
 # FIXME test code
 
+from asks import init as init_asks
 from collections import defaultdict as DefaultDict
 from os.path import exists
+from pprint import pprint, pformat
 from random import seed, shuffle
+from shutil import get_terminal_size
+from sys import stdout, stderr
 from traceback import print_exc
 
 async def main():
