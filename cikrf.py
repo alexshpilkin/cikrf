@@ -159,9 +159,9 @@ class Commission:
 		if caption is None:
 			assert nodata(page)
 			return None
-		return normalize(capt.find_parent('td')
-		                     .find_next_sibling('td')
-		                     .string)
+		return normalize(caption.find_parent('td')
+		                        .find_next_sibling('td')
+		                        .string)
 
 	async def path(self, session):
 		return self._ppath + [await self.name(session)]
