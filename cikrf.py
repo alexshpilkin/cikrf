@@ -50,7 +50,7 @@ class Scope(Enum):
 
 class Hints:
 	def __init__(self):
-		self.depth = None
+		pass
 
 Report = namedtuple('Report', ['records', 'results'])
 Row    = namedtuple('Row',    ['number', 'name', 'value'])
@@ -153,13 +153,19 @@ class Commission:
 		# FIXME don't actually need the directory (most of the time)
 		return await self.page(session, '0')
 
+	@property
+	def level(self):
+		return len(self._ppath)
+
 	async def name(self, session):
 		page = await self._directory(session)
 		crumbs = page.find('table', height='80%').find('td')('a')
-		if len(crumbs) > 0:
+		# If the crumbs are absent, or if one of the crumbs is the
+		# empty string, we can't be sure we got them right, so use
+		# the fallback method.
+		if len(crumbs)-1 == self.level:
 			# NB. When the crumbs are missing from the parent, the
-			# text in crumbs[:-1] can _differ_ from self._ppath
-			assert len(crumbs)-1 == len(self._ppath)
+			# text in crumbs[:-1] _can_ differ from self._ppath.
 			return normalize(crumbs[-1].string)
 
 		page = await self.page(session, '0')
@@ -177,9 +183,7 @@ class Commission:
 		return self._ppath + [await self.name(session)]
 
 	async def children(self, session):
-		if len(self._ppath)+1 == self._hints.depth:
-			return []
-		elif self._children is None:
+		if self._children is None:
 			page = await self._directory(session)
 			self._children = \
 				[Commission(urljoin(self.url, o['value']),
@@ -191,10 +195,6 @@ class Commission:
 				assert page.find(string=matches(
 					"нет отчета по навигации или же это "
 					"конечный твд == уик"))
-				if self._hints.depth is None:
-					self._hints.depth = len(self._ppath)+1
-				assert(self._hints.depth is None or
-				       self._hints.depth == len(self._ppath)+1)
 		else:
 			await sleep(0)
 		return self._children
@@ -369,14 +369,11 @@ async def main():
 		async def visit(comm):
 			nonlocal done
 			try:
-				print('/'.join(await comm.path(session)),
-	#			      pformat(await comm._result_types(session), width=w),
-				      sep='\n', flush=True)
-				print(f'{done} done, {len(nursery.child_tasks)} pending, depth={root._hints.depth}', end='\r', flush=True)
 				await queue.put(await comm.children(session))
+				print('\033[K' + '/'.join(await comm.path(session)), flush=True)
+				print(f'{done} done, {len(nursery.child_tasks)} pending', end='\r', flush=True)
 			except Exception as e:
 				print(f'Error processing <{comm.url}>: {e}', file=stderr)
-				print(f'depth = {len(comm._ppath)+1}, hints.depth = {comm._hints.depth}')
 				print_exc()
 				stderr.flush()
 				raise
@@ -384,9 +381,10 @@ async def main():
 		async with open_nursery() as nursery:
 			nursery.start_soon(visit, root)
 			while nursery.child_tasks:
-				print(f'{done} done, {len(nursery.child_tasks)} pending, depth={root._hints.depth}', end='\r', flush=True)
+				print(f'{done} done, {len(nursery.child_tasks)} pending', end='\r', flush=True)
 				for comm in await queue.get():
 					nursery.start_soon(visit, comm)
+					await sleep(0)
 
 if __name__ == '__main__':
 	init_asks('trio')
