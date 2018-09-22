@@ -289,9 +289,92 @@ from pprint import pprint, pformat
 from random import seed, shuffle
 from shutil import get_terminal_size
 from sys import stdout, stderr
+from textwrap import shorten
 from traceback import print_exc
+from trio import WouldBlock
+
+def report(done, pending, last):
+	global lastrep
+	message = (('{done} done, {pending} pending: {last}'
+	            if last is not None
+	            else '{done} done, {pending} pending')
+	           .format(done=done, pending=pending, last=last))
+	print('\r\033[K' + shorten(message, width=w, placeholder='...'),
+	      end='', file=stderr, flush=True)
+def clear():
+	print('\r\033[K', end='', file=stderr, flush=True)
+
+async def collect_types(session, els):
+	queue = Queue(0)
+	count = 0
+	types = DefaultDict(set)
+	tsets = set()
+	last  = None
+
+	async def visit(comm):
+		nonlocal last
+		types = await comm._result_types(session)
+		last = comm.title
+		await queue.put(types)
+
+	async def starter(nursery):
+		for e in els:
+			nursery.start_soon(visit, e)
+			await sleep(0)
+
+	try:
+		async with open_nursery() as nursery:
+			nursery.start_soon(starter, nursery)
+			while nursery.child_tasks:
+				try:
+					ts = queue.get_nowait()
+				except WouldBlock:
+					pass
+				else:
+					for k, v in ts.items(): types[k].add(v)
+					tsets.add(tuple(ts.keys()))
+					count += 1
+				await sleep(0)
+				report(count, len(nursery.child_tasks), last)
+	finally:
+		clear()
+		pprint(dict(types), width=w)
+		pprint(list(map(list, tsets)), width=w)
+		print(f'{count} of {len(els)}')
+
+async def traverse(session, root):
+	queue = Queue(0)
+	done  = 0
+	last  = None
+
+	async def visit(comm):
+		nonlocal done, last
+		try:
+			await queue.put(await comm.children(session))
+			last = '/'.join(await comm.path(session))
+		except Exception as e:
+			print(f'Error processing <{comm.url}>: {e}', file=stderr)
+			print_exc()
+			stderr.flush()
+			raise
+		done += 1
+
+	async with open_nursery() as nursery:
+		nursery.start_soon(visit, root)
+		while nursery.child_tasks:
+			report(done, len(nursery.child_tasks), last)
+			try:
+				more = queue.get_nowait()
+			except WouldBlock:
+				pass
+			else:
+				for comm in more:
+					nursery.start_soon(visit, comm)
+			await sleep(0)
+		clear()
 
 async def main():
+	global w
 	w = get_terminal_size().columns
 	params = {
 #		'start': Date(2003,1,1),
@@ -310,81 +393,22 @@ async def main():
 			els = list(Election.fromjson(obj) for obj in load(fp))
 
 		seed(57)
-#		shuffle(els)
+		shuffle(els)
 
-		elec = els[-2]
-		pprint(dict(elec._single(await elec.page(session, '226'))._asdict()), width=w)
-		print()
-		pprint({k: dict(v._asdict()) for k, v in elec._aggregate(await elec.page(session, '227')).items()}, width=w)
-		return
+		await collect_types(session, els)
+
+#		elec = els[-2]
+#		pprint(dict(elec._single(await elec.page(session, '226'))._asdict()), width=w)
+#		print()
+#		pprint({k: dict(v._asdict()) for k, v in elec._aggregate(await elec.page(session, '227')).items()}, width=w)
+#		return
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
 #		for i, e in enumerate(els):
 #			if e.url == url: break
 #		els = els[i:]
 
-#		queue = Queue(0)
-#		async def visit(comm):
-#			await queue.put(await comm._result_types(session))
-#			print(comm.title)
-
-#		count = 0
-#		types = DefaultDict(set)
-#		tsets = set()
-#		try:
-#			async with open_nursery() as nursery:
-#				for e in els:
-#					nursery.start_soon(visit, e)
-#					await sleep(0)
-#				while nursery.child_tasks:
-#					ts = await queue.get()
-#					for k, v in ts.items(): types[k].add(v)
-#					tsets.add(frozenset(ts.keys()))
-#					count += 1
-#		finally:
-#			pprint(dict(types), width=w)
-#			pprint([list(s) for s in tsets], width = w)
-#			print(f'{count} of {len(els)}')
-
-#		for e in els:
-#			print(e.url, flush=True)
-#			while True:
-#				try: print(await e.date(session),
-#				           e.title,
-#				           await e.name(session),
-##				           pformat(await e._result_types(session), width=w),
-#				           sep='\n', end='\n\n', flush=True)
-#				except Exception:
-#					print_exc()
-#					if input('Retry? [YN] ').lower().startswith('n'): break
-#				else:
-#					break
-##			ts = await e._result_types(session)
-##			assert (bool(len(ts) == 2*len([t for t in ts.values() if t.startswith("Сводн")])) !=
-##			        (bool("еферендум" in e.title or "Опрос" in e.title) and not nodata(await e.page(session, '0'))))
-
-		root  = els[-1]
-		queue = Queue(0)
-		done  = 0
-		async def visit(comm):
-			nonlocal done
-			try:
-				await queue.put(await comm.children(session))
-				print('\033[K' + '/'.join(await comm.path(session)), flush=True)
-				print(f'{done} done, {len(nursery.child_tasks)} pending', end='\r', flush=True)
-			except Exception as e:
-				print(f'Error processing <{comm.url}>: {e}', file=stderr)
-				print_exc()
-				stderr.flush()
-				raise
-			done += 1
-		async with open_nursery() as nursery:
-			nursery.start_soon(visit, root)
-			while nursery.child_tasks:
-				print(f'{done} done, {len(nursery.child_tasks)} pending', end='\r', flush=True)
-				for comm in await queue.get():
-					nursery.start_soon(visit, comm)
-					await sleep(0)
+		# await traverse(session, els[-1])
 
 if __name__ == '__main__':
 	init_asks('trio')
