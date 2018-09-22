@@ -149,16 +149,12 @@ class Commission:
 			           results=d[seps[1]-1 :]))
 			for c, d in zip(comms, datas))
 
-	async def _directory(self, session):
-		# FIXME don't actually need the directory (most of the time)
-		return await self.page(session, '0')
-
 	@property
 	def level(self):
 		return len(self._ppath)
 
 	async def name(self, session):
-		page = await self._directory(session)
+		page = await self.page(session, '0') # FIXME Any cached page would work
 		crumbs = page.find('table', height='80%').find('td')('a')
 		# If the crumbs are absent, or if one of the crumbs is the
 		# empty string, we can't be sure we got them right, so use
@@ -184,7 +180,7 @@ class Commission:
 
 	async def children(self, session):
 		if self._children is None:
-			page = await self._directory(session)
+			page = await self.page(session, '0') # FIXME Any cached page would work
 			self._children = \
 				[Commission(urljoin(self.url, o['value']),
 				            await self.path(session),
