@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime        import date as Date, datetime as DateTime
 from enum            import Enum
 from jsonseq         import dump, load
-from trio            import Queue, open_nursery, run, sleep
+from trio            import BrokenStreamError, Queue, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 PARSER = 'html5lib'
@@ -77,6 +77,8 @@ class Commission:
 				try: res = await session.get(url)
 				except AsksException as e:
 					print('ERR', url, e, flush=True) # FIXME
+				except BrokenStreamError as e:
+					print('ERR', url, e, flush=True) # FIXME
 				except OSError as e:
 					print('ERR', url, e, flush=True) # FIXME
 				else:
@@ -92,21 +94,35 @@ class Commission:
 			await sleep(0)
 		return self._page[type]
 
-	async def _result_types(self, session):
-		page = await self.page(session, '0')
-		capt = page.find(string=matches('Результаты выборов'))
-		if capt is None:
-			# NB: In general, nodata(page) is false: there _are_
-			# (local) elections with no results.
-			return dict()
+	@staticmethod
+	def _types(page):
+		types = DefaultDict(OrderedDict)
+		pivot = page.find('img', src='img/form.gif')
+		if pivot is None:
+			return types
 
-		ancs = (row.find('a')
-		        for row in capt.find_parent('tr').next_siblings
-		        if isinstance(row, Tag))
-		return OrderedDict(
-			(parse_qs(urlsplit(a['href']).query)['type'][0],
-			 normalize(a.string))
-			for a in ancs)
+		rows = pivot.find_parent('table')('tr')
+		category = None
+		for row in rows:
+			if (not isinstance(row, Tag) or
+			    row.find(class_='headers') is not None or
+			    row.find(class_='folder') is not None):
+				continue
+
+			a = row.find('a')
+			s = normalize(' '.join(p.string
+			                       for p in row(string=True)))
+			if a is not None:
+				t = parse_qs(urlsplit(a['href']).query).get('type', [None])[0]
+				if t is None: continue
+				types[category][normalize(s)] = t
+			elif s:
+				category = normalize(s).casefold()
+				assert not types[category]
+
+		assert all(v for k, v in types.items()
+		             if k != 'финансовые отчеты')
+		return types
 
 	@staticmethod
 	def _single_table(table):
@@ -309,8 +325,8 @@ async def collect_types(session, els):
 
 	async def visit(comm):
 		nonlocal last
-		types = await comm._result_types(session)
-		last = comm.title
+		types = comm._types(await comm.page(session, '0'))['результаты выборов']
+		last  = comm.title
 		await queue.put(types)
 
 	async def starter(nursery):
@@ -327,9 +343,9 @@ async def collect_types(session, els):
 				except WouldBlock:
 					pass
 				else:
-					for k, v in ts.items(): types[k].add(v)
-					tsets.add(tuple(ts.keys()))
-					count += 1
+					for n, t in ts.items(): types[t].add(n)
+					tsets.add(tuple(ts.values()))
+					done += 1
 				await sleep(0)
 				report(count, len(nursery.child_tasks), last)
 	finally:
