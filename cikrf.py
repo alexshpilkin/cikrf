@@ -296,6 +296,7 @@ class Election(Commission):
 
 from asks import init as init_asks
 from collections import defaultdict as DefaultDict
+from contextlib import contextmanager
 from os.path import exists
 from pprint import pprint, pformat
 from random import seed, shuffle
@@ -316,17 +317,28 @@ def report(done, pending, last):
 def clear():
 	print('\r\033[K', end='', file=stderr, flush=True)
 
+@contextmanager
+def exceptions(what):
+	try:
+		yield
+	except Exception as err:
+		print(f'Error processing "{what}": {err}', file=stderr)
+		print_exc()
+		stderr.flush()
+		raise
+
 async def collect_types(session, els):
 	queue = Queue(0)
-	count = 0
 	types = DefaultDict(set)
 	tsets = set()
+	done  = 0
 	last  = None
 
 	async def visit(comm):
 		nonlocal last
-		types = comm._types(await comm.page(session, '0'))['результаты выборов']
-		last  = comm.title
+		with exceptions(comm.url):
+			types = comm._types(await comm.page(session, '0'))['результаты выборов']
+			last  = comm.title
 		await queue.put(types)
 
 	async def starter(nursery):
@@ -347,41 +359,43 @@ async def collect_types(session, els):
 					tsets.add(tuple(ts.values()))
 					done += 1
 				await sleep(0)
-				report(count, len(nursery.child_tasks), last)
+				report(done, len(nursery.child_tasks), last)
 	finally:
 		clear()
 		pprint(dict(types), width=w)
 		pprint(list(map(list, tsets)), width=w)
-		print(f'{count} of {len(els)}')
+		print(f'{done} of {len(els)}')
 
 async def traverse(session, root):
-	queue = Queue(0)
-	done  = 0
-	last  = None
+	done = 0
+	last = None
+	typecache = dict()
 
-	async def visit(comm):
+	async def visit(nursery, comm):
 		nonlocal done, last
-		try:
-			await queue.put(await comm.children(session))
-			last = '/'.join(await comm.path(session))
-		except Exception as e:
-			print(f'Error processing <{comm.url}>: {e}', file=stderr)
-			print_exc()
-			stderr.flush()
-			raise
-		done += 1
 
+		with exceptions(comm.url):
+			children = await comm.children(session)
+			path     = await comm.path(session)
+
+			types = comm._types(await comm.page(session, '0'))['результаты выборов']
+			if not (typecache.get(comm.level) is None or not types or
+			        typecache[comm.level] == frozenset(types.values())):
+				print('\r\033[K', comm.url, list(typecache[comm.level]), types, flush=True)
+			if comm.level not in typecache:
+				typecache[comm.level] = frozenset(types.values())
+
+		last = '/'.join(path)
+		done += 1
+		for child in children:
+			nursery.start_soon(visit, nursery, child)
+			await sleep(0)
+
+	print(shorten(root.title, width=w, placeholder=' ...'))
 	async with open_nursery() as nursery:
-		nursery.start_soon(visit, root)
+		nursery.start_soon(visit, nursery, root)
 		while nursery.child_tasks:
 			report(done, len(nursery.child_tasks), last)
-			try:
-				more = queue.get_nowait()
-			except WouldBlock:
-				pass
-			else:
-				for comm in more:
-					nursery.start_soon(visit, comm)
 			await sleep(0)
 		clear()
 
@@ -395,7 +409,7 @@ async def main():
 	}
 	filename = 'elections.jsonseq'
 
-	async with Session(connections=25) as session:
+	async with Session(connections=100) as session:
 		if not exists(filename):
 			with open(filename, 'w', encoding='utf-8') as fp:
 				async for e in Election.search(session, **params):
