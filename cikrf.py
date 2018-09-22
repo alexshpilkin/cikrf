@@ -66,7 +66,9 @@ class Commission:
 		self._children = None
 
 	def __repr__(self):
-		return f'{type(self).__qualname__}(url={self.url!r}, ppath={self._ppath!r}, hints={self._hints!r})'
+		return '{}(url={!r}, ppath={!r}, hints={!r})'.format(
+			type(self).__qualname__,
+			self.url, self._ppath, self._hints)
 
 	async def page(self, session, type):
 		if self._page.get(type) is None:
@@ -81,8 +83,11 @@ class Commission:
 					if res.status_code // 100 == 2: break
 					else: print(res.status_code, url, res.reason_phrase, flush=True) # FIXME
 				await sleep(0) # FIXME back off?
-			encoding = res.encoding.lower() if 'charset' in res.headers.get('Content-Type','') else None # FIXME unreliable (change in upstream asks?)
-			self._page[type] = BeautifulSoup(res.content, PARSER, from_encoding=encoding)
+			enc = (res.encoding.lower()
+			       if 'charset' in res.headers.get('content-type')
+			       else None) # FIXME unreliable (change in asks?)
+			self._page[type] = BeautifulSoup(
+				res.content, PARSER, from_encoding=enc)
 		else:
 			await sleep(0)
 		return self._page[type]
@@ -98,15 +103,15 @@ class Commission:
 		ancs = (row.find('a')
 		        for row in capt.find_parent('tr').next_siblings
 		        if isinstance(row, Tag))
-		return(OrderedDict
-			((parse_qs(urlsplit(a['href']).query)['type'][0],
-			  normalize(a.string))
-			 for a in ancs))
+		return OrderedDict(
+			(parse_qs(urlsplit(a['href']).query)['type'][0],
+			 normalize(a.string))
+			for a in ancs)
 
 	@staticmethod
 	def _single_table(table):
 		rows = [tr('td') for tr in table('tr')]
-		assert all(len(row) in {2,3} for row in rows)
+		assert all(len(row) in {2, 3} for row in rows)
 		seps = [i for i, row in enumerate(rows) if len(row) == 2]
 		data = [Row(number=normalize(row[0].string),
 		            name=normalize(row[1].string),
@@ -125,18 +130,24 @@ class Commission:
 	def _aggregate(cls, page):
 		tabs = page(cellpadding='2')
 		assert len(tabs) == 2
+
 		# Left table contains headers
 		seps, head = cls._single_table(tabs[0])
+		assert seps[0] == 0 # Column titles
+
 		# Right table contains data per commission
 		rows = [tr('td') for tr in tabs[1]('tr')]
+		data = (row for i, row in enumerate(rows) if i not in seps)
 		comms = (normalize(td.find('a').string) for td in rows[0])
 		datas = ([h._replace(value=int(v.find(string=True).string))
 		          for h, v in zip(head, col)]
-		         for col in zip(*(row for i,row in enumerate(rows) if i not in seps)))
-		return(OrderedDict
-			((c, Report(records=d[:seps[1]-1],
-			            results=d[seps[1]-1:]))
-			 for c, d in zip(comms, datas)))
+		         for col in zip(*data))
+
+		# Extra separator in seps[0] means indices are offset by 1
+		return OrderedDict(
+			(c, Report(records=d[: seps[1]-1],
+			           results=d[seps[1]-1 :]))
+			for c, d in zip(comms, datas))
 
 	async def _directory(self, session):
 		# FIXME don't actually need the directory (most of the time)
@@ -148,14 +159,13 @@ class Commission:
 		if len(crumbs) > 0:
 			# NB. When the crumbs are missing from the parent, the
 			# text in crumbs[:-1] can _differ_ from self._ppath
-			# FIXME Example: http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=485400692143&region=85&prver=0&pronetvd=0
 			assert len(crumbs)-1 == len(self._ppath)
 			return normalize(crumbs[-1].string)
 
 		page = await self.page(session, '0')
-		caption = page.find(string=disj
-			(matches('Наименование комиссии'),
-			 matches('Наименование избирательной комиссии')))
+		caption = page.find(string=disj(
+			matches('Наименование комиссии'),
+			matches('Наименование избирательной комиссии')))
 		if caption is None:
 			assert nodata(page)
 			return None
@@ -178,9 +188,9 @@ class Commission:
 				 for o in page('option')
 				 if o.attrs.get('value')]
 			if not self._children:
-				assert page.find(string=matches
-					("нет отчета по навигации или же это "
-					 "конечный твд == уик"))
+				assert page.find(string=matches(
+					"нет отчета по навигации или же это "
+					"конечный твд == уик"))
 				if self._hints.depth is None:
 					self._hints.depth = len(self._ppath)+1
 				assert(self._hints.depth is None or
@@ -198,7 +208,9 @@ class Election(Commission):
 		super().__init__(url, [], Hints())
 
 	def __repr__(self):
-		return f'{type(self).__qualname__}(url={self.url!r}, title={self.title!r}, place={self.place!r})'
+		return '{}(url={!r}, title={!r}, place={!r})'.format(
+			type(self).__qualname__,
+			self.url, self.title, self.place)
 
 	_CONTEXT = 'http://example.org/election.jsonld' # FIXME
 
