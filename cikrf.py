@@ -110,7 +110,7 @@ class Commission:
 		                        urladjust(self.url, type=type))
 
 	@staticmethod
-	def _types(page):
+	def _parsetypes(page):
 		types = DefaultDict(OrderedDict)
 		pivot = page.find('img', src='img/form.gif')
 		if pivot is None:
@@ -140,7 +140,7 @@ class Commission:
 		return types
 
 	@staticmethod
-	def _single_table(table):
+	def _parsetable(table):
 		rows = [tr('td') for tr in table('tr')]
 		assert all(len(row) in {2, 3} for row in rows)
 		seps = [i for i, row in enumerate(rows) if len(row) == 2]
@@ -151,19 +151,19 @@ class Commission:
 		return seps, data
 
 	@classmethod
-	def _single(cls, page):
+	def _parsesingle(cls, page):
 		tabs = page(cellpadding='2')
 		assert len(tabs) == 1
-		seps, data = cls._single_table(tabs[0])
+		seps, data = cls._parsetable(tabs[0])
 		return Report(records=data[:seps[0]], results=data[seps[0]:])
 
 	@classmethod
-	def _aggregate(cls, page):
+	def _parseaggregate(cls, page):
 		tabs = page(cellpadding='2')
 		assert len(tabs) == 2
 
 		# Left table contains headers
-		seps, head = cls._single_table(tabs[0])
+		seps, head = cls._parsetable(tabs[0])
 		assert seps[0] == 0 # Column titles
 
 		# Right table contains data per commission
@@ -354,7 +354,7 @@ async def collect_types(session, els):
 	async def visit(comm):
 		nonlocal last
 		with exceptions(comm.url):
-			types = comm._types(await comm._page(session, '0'))['результаты выборов']
+			types = comm._parsetypes(await comm._page(session, '0'))['результаты выборов']
 			last  = comm.title
 		await queue.put(types)
 
@@ -395,7 +395,7 @@ async def traverse(session, root):
 			children = await comm.children(session)
 			path     = await comm.path(session)
 
-			types = comm._types(await comm._page(session, '0'))['результаты выборов']
+			types = comm._parsetypes(await comm._page(session, '0'))['результаты выборов']
 			if not (typecache.get(comm.level) is None or not types or
 			        typecache[comm.level] == frozenset(types.values())):
 				print('\r\033[K', comm.url, list(typecache[comm.level]), types, flush=True)
@@ -441,9 +441,9 @@ async def main():
 		await collect_types(session, els)
 
 #		elec = els[-2]
-#		pprint(dict(elec._single(await elec._page(session, '226'))._asdict()), width=w)
+#		pprint(dict(elec._parsesingle(await elec._page(session, '226'))._asdict()), width=w)
 #		print()
-#		pprint({k: dict(v._asdict()) for k, v in elec._aggregate(await elec._page(session, '227')).items()}, width=w)
+#		pprint({k: dict(v._asdict()) for k, v in elec._parseaggregate(await elec._page(session, '227')).items()}, width=w)
 #		return
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
