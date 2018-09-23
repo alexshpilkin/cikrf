@@ -90,24 +90,29 @@ Report = namedtuple('Report', ['records', 'results'])
 Row    = namedtuple('Row',    ['number', 'name', 'value'])
 
 class Commission:
-	__slots__ = ['url', '_ppath', '_cache', '_children']
+	__slots__ = ['url', 'purl', '_ppath', '_cache', '_children']
 
-	def __init__(self, url, ppath, *, cache=None):
+	def __init__(self, url, purl, ppath, *, cache=None):
 		if cache is None:
 			cache = Cache()
 		self.url       = url
+		self.purl      = purl
 		self._ppath    = ppath
 		self._cache    = cache
 		self._children = None
 
 	def __repr__(self):
-		return '{}(url={!r}, ppath={!r}, hints={!r})'.format(
-			type(self).__qualname__,
-			self.url, self._ppath, self._hints)
+		return('{}(url={!r}, purl={!r}, ppath={!r})'
+		       .format(type(self).__qualname__, self.url, self.purl,
+		               self._ppath))
 
 	def _page(self, session, type):
 		return self._cache.page(session,
 		                        urladjust(self.url, type=type))
+
+	def _ppage(self, session, type):
+		return self._cache.page(session,
+		                        urladjust(self.purl, type=type))
 
 	@staticmethod
 	def _parsetypes(page):
@@ -213,8 +218,9 @@ class Commission:
 		if self._children is None:
 			page = await self._page(session, '0') # FIXME Any cached page would work
 			self._children = \
-				[Commission(urljoin(self.url, o['value']),
-				            await self.path(session),
+				[Commission(url=urljoin(self.url, o['value']),
+				            purl=self.url,
+				            ppath=await self.path(session),
 				            cache=self._cache)
 				 for o in page('option')
 				 if o.attrs.get('value')]
@@ -232,12 +238,12 @@ class Election(Commission):
 	def __init__(self, url, title=None, place=None, *, cache=None):
 		self.title = title
 		self.place = place
-		super().__init__(url, [], cache=cache)
+		super().__init__(url=url, purl=None, ppath=[], cache=cache)
 
 	def __repr__(self):
-		return '{}(url={!r}, title={!r}, place={!r})'.format(
-			type(self).__qualname__,
-			self.url, self.title, self.place)
+		return('{}(url={!r}, title={!r}, place={!r})'
+		       .format(type(self).__qualname__, self.url, self.title,
+		               self.place))
 
 	_CONTEXT = 'http://example.org/election.jsonld' # FIXME
 
