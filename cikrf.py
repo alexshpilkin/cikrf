@@ -35,11 +35,6 @@ def matches(string):
 	def match(s): return s and normalize(s).casefold() == string
 	return match
 
-def disj(*matches):
-	matches = list(matches)
-	def match(s): return any(m(s) for m in matches)
-	return match
-
 def nodata(page):
 	mess = page.find(string=matches('Нет данных для построения отчета.'))
 	return mess is not None
@@ -201,9 +196,9 @@ class Commission:
 			return normalize(crumbs[-1].string)
 
 		page = await self._page(session, '0')
-		caption = page.find(string=disj(
+		caption = page.find(string=[
 			matches('Наименование комиссии'),
-			matches('Наименование избирательной комиссии')))
+			matches('Наименование избирательной комиссии')])
 		if caption is None:
 			assert nodata(page)
 			return None
