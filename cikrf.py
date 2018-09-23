@@ -5,11 +5,14 @@ from collections     import OrderedDict, namedtuple
 from collections.abc import Iterable
 from datetime        import date as Date, datetime as DateTime
 from enum            import Enum
+from itertools       import accumulate, chain, repeat
+from math            import sqrt
+from operator        import mul
 from simplejsonseq   import dump, load
 from trio            import BrokenStreamError, Queue, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
-PARSER = 'html5lib'
+_PARSER = 'html5lib'
 
 def urladjust(url, params=dict(), **named):
 	parts = urlsplit(url)
@@ -48,21 +51,58 @@ class Scope(Enum):
 	MUNICPTY = '4'
 	# SETTLMNT FIXME
 
-class Hints:
-	def __init__(self):
-		pass
+class Cache:
+	__slots__ = ['delay', 'rate', '_page']
+
+	def __init__(self, delay=0.25, rate=sqrt(2)):
+		self.delay = delay
+		self.rate  = rate
+		self.clear()
+
+	def clear(self):
+		self._page = dict()
+
+	def _backoff(self):
+		return accumulate(chain([self.delay], repeat(self.rate)), mul)
+
+	async def _download(self, session, url):
+		for delay in self._backoff():
+			try:
+				res = await session.get(url)
+			except AsksException:
+				pass
+			except BrokenStreamError:
+				pass
+			except ConnectionError:
+				pass
+			else:
+				# The server raises 404(!) on parameter error
+				if res.status_code // 100 == 2: break
+			await sleep(delay)
+		encoding = (res.encoding.lower()
+		            if 'charset' in res.headers.get('content-type')
+		            else None) # FIXME unreliable (change in asks?)
+		return res.content, encoding
+
+	async def page(self, session, url):
+		if self._page.get(url) is None:
+			content, encoding = await self._download(session, url)
+			self._page[url] = BeautifulSoup(
+				content, _PARSER, from_encoding=encoding)
+		return self._page[url]
 
 Report = namedtuple('Report', ['records', 'results'])
 Row    = namedtuple('Row',    ['number', 'name', 'value'])
 
 class Commission:
-	__slots__ = ['url', '_ppath', '_hints', '_page', '_children']
+	__slots__ = ['url', '_ppath', '_cache', '_children']
 
-	def __init__(self, url, ppath, hints):
+	def __init__(self, url, ppath, *, cache=None):
+		if cache is None:
+			cache = Cache()
 		self.url       = url
 		self._ppath    = ppath
-		self._hints    = hints
-		self._page     = dict()
+		self._cache    = cache
 		self._children = None
 
 	def __repr__(self):
@@ -70,29 +110,9 @@ class Commission:
 			type(self).__qualname__,
 			self.url, self._ppath, self._hints)
 
-	async def page(self, session, type):
-		if self._page.get(type) is None:
-			url = urladjust(self.url, type=[type])
-			while True:
-				try: res = await session.get(url)
-				except AsksException as e:
-					print('ERR', url, e, flush=True) # FIXME
-				except BrokenStreamError as e:
-					print('ERR', url, e, flush=True) # FIXME
-				except OSError as e:
-					print('ERR', url, e, flush=True) # FIXME
-				else:
-					if res.status_code // 100 == 2: break
-					else: print(res.status_code, url, res.reason_phrase, flush=True) # FIXME
-				await sleep(0) # FIXME back off?
-			enc = (res.encoding.lower()
-			       if 'charset' in res.headers.get('content-type')
-			       else None) # FIXME unreliable (change in asks?)
-			self._page[type] = BeautifulSoup(
-				res.content, PARSER, from_encoding=enc)
-		else:
-			await sleep(0)
-		return self._page[type]
+	def _page(self, session, type):
+		return self._cache.page(session,
+		                        urladjust(self.url, type=type))
 
 	@staticmethod
 	def _types(page):
@@ -170,7 +190,7 @@ class Commission:
 		return len(self._ppath)
 
 	async def name(self, session):
-		page = await self.page(session, '0') # FIXME Any cached page would work
+		page = await self._page(session, '0') # FIXME Any cached page would work
 		crumbs = page.find('table', height='80%').find('td')('a')
 		# If the crumbs are absent, or if one of the crumbs is the
 		# empty string, we can't be sure we got them right, so use
@@ -180,7 +200,7 @@ class Commission:
 			# text in crumbs[:-1] _can_ differ from self._ppath.
 			return normalize(crumbs[-1].string)
 
-		page = await self.page(session, '0')
+		page = await self._page(session, '0')
 		caption = page.find(string=disj(
 			matches('Наименование комиссии'),
 			matches('Наименование избирательной комиссии')))
@@ -196,11 +216,11 @@ class Commission:
 
 	async def children(self, session):
 		if self._children is None:
-			page = await self.page(session, '0') # FIXME Any cached page would work
+			page = await self._page(session, '0') # FIXME Any cached page would work
 			self._children = \
 				[Commission(urljoin(self.url, o['value']),
 				            await self.path(session),
-				            self._hints)
+				            cache=self._cache)
 				 for o in page('option')
 				 if o.attrs.get('value')]
 			if not self._children:
@@ -214,10 +234,10 @@ class Commission:
 class Election(Commission):
 	__slots__ = ['title', 'place', 'root']
 
-	def __init__(self, url, title=None, place=None):
+	def __init__(self, url, title=None, place=None, *, cache=None):
 		self.title = title
 		self.place = place
-		super().__init__(url, [], Hints())
+		super().__init__(url, [], cache=cache)
 
 	def __repr__(self):
 		return '{}(url={!r}, title={!r}, place={!r})'.format(
@@ -238,7 +258,7 @@ class Election(Commission):
 		return cls(**data)
 
 	async def date(self, session):
-		page = await self.page(session, '0')
+		page = await self._page(session, '0')
 		capt = page.find(string=matches('Дата голосования'))
 		if capt is None:
 			assert nodata(page)
@@ -249,7 +269,7 @@ class Election(Commission):
 
 	@classmethod
 	async def search(cls, session, start=Date(1991, 6, 12), end=None, *,
-	                 scope=list(Scope)): # FIXME parameter order?
+	                 scope=list(Scope), cache=None): # FIXME parameter order?
 
 		if end is None:
 			end = Date.today() # FIXME reconsider this default?
@@ -272,7 +292,8 @@ class Election(Commission):
 			'region'     : '0', # FIXME whole country
 		}
 		res = await session.post(SEARCH, data=payload)
-		doc = BeautifulSoup(res.text, PARSER)
+		# FIXME Proper encoding detection as in Cache._page()
+		doc = BeautifulSoup(res.text, _PARSER)
 
 		place = []
 		for a in doc('a', class_='vibLink'):
@@ -290,7 +311,8 @@ class Election(Commission):
 			yield cls(url=urladjust(urljoin(SEARCH, a['href']),
 			                        sub_region=['99']),
 			          title=normalize(a.string),
-			          place=list(place))
+			          place=list(place),
+			          cache=cache)
 
 # FIXME test code
 
@@ -337,7 +359,7 @@ async def collect_types(session, els):
 	async def visit(comm):
 		nonlocal last
 		with exceptions(comm.url):
-			types = comm._types(await comm.page(session, '0'))['результаты выборов']
+			types = comm._types(await comm._page(session, '0'))['результаты выборов']
 			last  = comm.title
 		await queue.put(types)
 
@@ -378,7 +400,7 @@ async def traverse(session, root):
 			children = await comm.children(session)
 			path     = await comm.path(session)
 
-			types = comm._types(await comm.page(session, '0'))['результаты выборов']
+			types = comm._types(await comm._page(session, '0'))['результаты выборов']
 			if not (typecache.get(comm.level) is None or not types or
 			        typecache[comm.level] == frozenset(types.values())):
 				print('\r\033[K', comm.url, list(typecache[comm.level]), types, flush=True)
@@ -424,9 +446,9 @@ async def main():
 		await collect_types(session, els)
 
 #		elec = els[-2]
-#		pprint(dict(elec._single(await elec.page(session, '226'))._asdict()), width=w)
+#		pprint(dict(elec._single(await elec._page(session, '226'))._asdict()), width=w)
 #		print()
-#		pprint({k: dict(v._asdict()) for k, v in elec._aggregate(await elec.page(session, '227')).items()}, width=w)
+#		pprint({k: dict(v._asdict()) for k, v in elec._aggregate(await elec._page(session, '227')).items()}, width=w)
 #		return
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
