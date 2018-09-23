@@ -3,12 +3,14 @@ from asks.errors     import AsksException
 from bs4             import BeautifulSoup, Tag
 from collections     import OrderedDict, namedtuple
 from collections.abc import Iterable
+from contextlib      import asynccontextmanager
 from datetime        import date as Date, datetime as DateTime
 from enum            import Enum
 from itertools       import accumulate, chain, repeat
 from math            import sqrt
 from operator        import mul
 from simplejsonseq   import dump, load
+from sys             import maxsize as MAXSIZE
 from trio            import BrokenStreamError, Queue, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -232,6 +234,32 @@ class Commission:
 			await sleep(0)
 		return self._children
 
+	@asynccontextmanager
+	async def walk(self, session, depth=MAXSIZE):
+		queue = Queue(0)
+
+		async with open_nursery() as nursery:
+			async def visit(comm, depth):
+				if depth <= 0: return
+				await queue.put(comm)
+				children = await comm.children(session)
+				for child in children:
+					nursery.start_soon(visit, child, depth-1)
+					await sleep(0)
+
+			async def items():
+				nursery.start_soon(visit, self, depth)
+				while nursery.child_tasks:
+					try:
+						item = queue.get_nowait()
+					except WouldBlock:
+						pass
+					else:
+						yield item
+					await sleep(0)
+
+			yield items()
+
 class Election(Commission):
 	__slots__ = ['title', 'place', 'root']
 
@@ -320,16 +348,16 @@ class Election(Commission):
 from asks import init as init_asks
 from collections import defaultdict as DefaultDict
 from contextlib import contextmanager
+from os import getenv, get_terminal_size
 from os.path import exists
 from pprint import pprint, pformat
 from random import seed, shuffle
-from shutil import get_terminal_size
 from sys import stdout, stderr
 from textwrap import shorten
 from traceback import print_exc
 from trio import WouldBlock
 
-def report(done, pending, last):
+def report(done, pending, last=None):
 	global lastrep
 	message = (('{done} done, {pending} pending: {last}'
 	            if last is not None
@@ -350,81 +378,48 @@ def exceptions(what):
 		stderr.flush()
 		raise
 
-async def collect_types(session, els):
-	queue = Queue(0)
+async def collect_types(session, roots):
 	types = DefaultDict(set)
 	tsets = set()
 	done  = 0
 	last  = None
 
-	async def visit(comm):
-		nonlocal last
+	async def visit(title, comm):
+		nonlocal done, last
 		with exceptions(comm.url):
-			types = comm._parsetypes(await comm._page(session, '0'))['результаты выборов']
-			last  = comm.title
-		await queue.put(types)
+			ts = comm._parsetypes(await comm._page(session, '0'))['результаты выборов']
+			for n, t in ts.items(): types[t].add(n)
+			tsets.add(tuple(ts.values()))
 
-	async def starter(nursery):
-		for e in els:
-			nursery.start_soon(visit, e)
+			last = '/'.join(await comm.path(session)) + ': ' + title
+			done += 1
+
+	async def traverse(nursery, root):
+		title = str(await root.date(session)) + ' ' + root.title
+		with exceptions(root.url):
+			async with root.walk(session, 2) as children:
+				async for comm in children:
+					nursery.start_soon(visit, title, comm)
+
+	async def start(nursery):
+		for root in roots:
+			nursery.start_soon(traverse, nursery, root)
 			await sleep(0)
 
 	try:
 		async with open_nursery() as nursery:
-			nursery.start_soon(starter, nursery)
+			nursery.start_soon(start, nursery)
 			while nursery.child_tasks:
-				try:
-					ts = queue.get_nowait()
-				except WouldBlock:
-					pass
-				else:
-					for n, t in ts.items(): types[t].add(n)
-					tsets.add(tuple(ts.values()))
-					done += 1
-				await sleep(0)
 				report(done, len(nursery.child_tasks), last)
+				await sleep(0)
 	finally:
 		clear()
 		pprint(dict(types), width=w)
 		pprint(list(map(list, tsets)), width=w)
-		print(f'{done} of {len(els)}')
-
-async def traverse(session, root):
-	done = 0
-	last = None
-	typecache = dict()
-
-	async def visit(nursery, comm):
-		nonlocal done, last
-
-		with exceptions(comm.url):
-			children = await comm.children(session)
-			path     = await comm.path(session)
-
-			types = comm._parsetypes(await comm._page(session, '0'))['результаты выборов']
-			if not (typecache.get(comm.level) is None or not types or
-			        typecache[comm.level] == frozenset(types.values())):
-				print('\r\033[K', comm.url, list(typecache[comm.level]), types, flush=True)
-			if comm.level not in typecache:
-				typecache[comm.level] = frozenset(types.values())
-
-		last = '/'.join(path)
-		done += 1
-		for child in children:
-			nursery.start_soon(visit, nursery, child)
-			await sleep(0)
-
-	print(shorten(root.title, width=w, placeholder=' ...'))
-	async with open_nursery() as nursery:
-		nursery.start_soon(visit, nursery, root)
-		while nursery.child_tasks:
-			report(done, len(nursery.child_tasks), last)
-			await sleep(0)
-		clear()
 
 async def main():
 	global w
-	w = get_terminal_size().columns
+	w = getenv('COLUMNS', get_terminal_size(stderr.fileno()).columns)
 	params = {
 #		'start': Date(2003,1,1),
 #		'end': Date(2004,1,1),
@@ -456,8 +451,6 @@ async def main():
 #		for i, e in enumerate(els):
 #			if e.url == url: break
 #		els = els[i:]
-
-		# await traverse(session, els[-1])
 
 if __name__ == '__main__':
 	init_asks('trio')
