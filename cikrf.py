@@ -33,12 +33,15 @@ def fromdate(date):
 	return date.strftime('%d.%m.%Y')
 
 def matches(string):
-	string = string.casefold()
 	def match(s): return s and normalize(s).casefold() == string
 	return match
 
+def contains(string):
+	def match(s): return s and string in normalize(s)
+	return match
+
 def nodata(page):
-	mess = page.find(string=matches('Нет данных для построения отчета.'))
+	mess = page.find(string=matches('нет данных для построения отчета.'))
 	return mess is not None
 
 class Scope(Enum):
@@ -147,45 +150,124 @@ class Commission:
 		return types
 
 	@staticmethod
-	def _parsetable(table):
+	def _parsehorz(table):
 		rows = [tr('td') for tr in table('tr')]
-		assert all(len(row) in {2, 3} for row in rows)
-		seps = [i for i, row in enumerate(rows) if len(row) == 2]
-		data = [Row(number=normalize(row[0].string),
-		            name=normalize(row[1].string),
+		assert all(len(row) <= 3 for row in rows)
+
+		# Sort into separator and data lines
+		seps = [i for i, row in enumerate(rows)
+		          if len(row) < 3 or not row[2](string=normalize)]
+		data = [Row(number=normalize(row[0].find(string=True).string),
+		            # strip the (inconsistent) candidate numbering
+		            name=normalize(row[1].find(string=True).string)
+		                .lstrip('0123456789. '),
 		            value=int(row[2].find(string=True).string))
-		        for row in rows if len(row) == 3]
-		return seps, data
+		        for i, row in enumerate(rows) if i not in seps]
+
+		# Find first non-leading separator group
+		start = i = 0
+		while start < len(seps):
+			if seps[start] != start: break
+			start += 1
+		while i < len(seps) - start:
+			if seps[start+i] != seps[start] + i: break
+			i += 1
+
+		return data, seps, start, start+i
+
+	@staticmethod
+	def _parsevert(table, head, seps):
+		rows = [tr('td') for tr in table('tr')]
+		data = (row for i, row in enumerate(rows) if i not in seps)
+
+		assert rows[0][0].find(string=normalize)  # child names
+		comms = [normalize(td.find(string=True).string)
+		         for td in rows[0]]
+		datas = [[h._replace(value=int(v.find(string=True).string))
+		          for h, v in zip(head, col)]
+		         for col in zip(*data)]
+
+		return comms, datas
 
 	@classmethod
 	def _parsesingle(cls, page):
 		tabs = page(cellpadding='2')
-		assert len(tabs) == 1
-		seps, data = cls._parsetable(tabs[0])
-		return Report(records=data[:seps[0]], results=data[seps[0]:])
+		if not tabs:
+			# page is empty or refers to children
+			assert (nodata(page) or
+			        page(string=contains('необходимо перейти')))
+			return None
+
+		records, results = [], []
+
+		# Main table
+		data, seps, start, end = cls._parsehorz(tabs[0])
+		if start < len(seps):  # at least two data parts
+			records += data[: seps[start]-start]
+			results += data[seps[end-1]-end+1 :]
+			tabs = tabs[1:]
+		elif not data:  # empty table
+			tabs = tabs[1:]
+
+		# Supplementary table
+		if tabs:
+			data, seps, start, end = cls._parsehorz(tabs[0])
+			assert end == len(seps)  # only one data part
+			records += data
+			tabs = tabs[1:]
+
+		assert not tabs
+		return Report(records=records, results=results)
 
 	@classmethod
 	def _parseaggregate(cls, page):
 		tabs = page(cellpadding='2')
-		assert len(tabs) == 2
+		if not tabs:
+			# page is empty or refers to children
+			assert (nodata(page) or
+			        page(string=contains('необходимо перейти')))
+			return OrderedDict()
 
-		# Left table contains headers
-		seps, head = cls._parsetable(tabs[0])
-		assert seps[0] == 0 # Column titles
+		comms, recordss, resultss = [], [], []
 
-		# Right table contains data per commission
-		rows = [tr('td') for tr in tabs[1]('tr')]
-		data = (row for i, row in enumerate(rows) if i not in seps)
-		comms = (normalize(td.find('a').string) for td in rows[0])
-		datas = ([h._replace(value=int(v.find(string=True).string))
-		          for h, v in zip(head, col)]
-		         for col in zip(*data))
+		# Main table: left table is titles, right is data per child
+		head, seps, start, end = cls._parsehorz(tabs[0])
+		assert seps[0] == 0    # first row is child names
+		assert normalize(tabs[0].find(string=normalize).string).casefold() == "сумма"
+		if len(tabs) == 1:     # aggregate page on bottom level
+			return OrderedDict()
 
-		# Extra separator in seps[0] means indices are offset by 1
+		if start < len(seps):  # at least two data parts
+			comms, datas = cls._parsevert(tabs[1], head, seps)
+			recordss += [d[: seps[start]-start] for d in datas]
+			resultss += [d[seps[end-1]-end+1 :] for d in datas]
+			tabs = tabs[2:]
+		elif not head:  # empty table
+			assert not tabs[1](string=normalize)
+			tabs = tabs[2:]
+
+		# Supplementary table
+		if tabs:
+			if len(tabs[0]('td')) == 1:  # title
+				tabs = tabs[1:]
+
+			assert len(tabs) >= 2
+			if tabs[1]('td'):            # non-empty right table
+				head, seps, start, end = cls._parsehorz(tabs[0])
+				assert end == len(seps)  # only one data part
+
+				comms_, datas = cls._parsevert(tabs[1], head, seps)
+				if comms_ == comms:      # same child names
+					for records, data in zip(recordss, datas):
+						records += data
+
+			tabs = tabs[2:]
+
+		assert not tabs
 		return OrderedDict(
-			(c, Report(records=d[: seps[1]-1],
-			           results=d[seps[1]-1 :]))
-			for c, d in zip(comms, datas))
+			(comm, Report(records=records, results=results))
+			for comm, records, results
+			in zip(comms, recordss, resultss))
 
 	@property
 	def level(self):
@@ -204,8 +286,8 @@ class Commission:
 
 		page = await self._page(session, '0')
 		caption = page.find(string=[
-			matches('Наименование комиссии'),
-			matches('Наименование избирательной комиссии')])
+			matches('наименование комиссии'),
+			matches('наименование избирательной комиссии')])
 		if caption is None:
 			assert nodata(page)
 			return None
@@ -288,7 +370,7 @@ class Election(Commission):
 
 	async def date(self, session):
 		page = await self._page(session, '0')
-		capt = page.find(string=matches('Дата голосования'))
+		capt = page.find(string=matches('дата голосования'))
 		if capt is None:
 			assert nodata(page)
 			return None
@@ -373,7 +455,7 @@ def exceptions(what):
 	try:
 		yield
 	except Exception as err:
-		print(f'Error processing "{what}": {err}', file=stderr)
+		print('Error processing {}'.format(what), file=stderr)
 		print_exc()
 		stderr.flush()
 		raise
@@ -391,7 +473,24 @@ async def collect_types(session, roots):
 			for n, t in ts.items(): types[t].add(n)
 			tsets.add(tuple(ts.values()))
 
-			last = '/'.join(await comm.path(session)) + ': ' + title
+			sreps = [comm._parsesingle(await comm._page(session, t))
+			         for n, t in ts.items() if not n.startswith('Сводн')]
+			areps = [comm._parseaggregate(await comm._page(session, t))
+			         for n, t in ts.items() if     n.startswith('Сводн')]
+
+			pprint((comm.url, await comm.path(session), sreps, areps))
+
+			skeys = [frozenset(r.name for r in rep.results)
+				 for rep in sreps if rep]
+			akeys = [frozenset(r.name for r in reps.popitem()[1].results)
+				 for reps in areps if reps]
+			assert list(sorted(set(skeys), key=str)) == list(sorted(skeys, key=str))
+			assert list(sorted(set(akeys), key=str)) == list(sorted(akeys, key=str))
+			assert set(akeys) <= set(skeys)
+
+			last = ('/'.join(c if c is not None else '!'
+			                 for c in await comm.path(session)) +
+			        ': ' + title)
 			done += 1
 
 	async def traverse(nursery, root):
