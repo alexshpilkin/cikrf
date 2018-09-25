@@ -10,6 +10,7 @@ from itertools       import accumulate, chain, repeat
 from math            import sqrt
 from operator        import mul
 from simplejsonseq   import dump, load
+from socket          import gaierror as GAIError
 from sys             import maxsize as MAXSIZE
 from trio            import BrokenStreamError, Queue, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
@@ -88,6 +89,8 @@ class Cache:
 				pass
 			except ConnectionError:
 				pass
+			except GAIError:
+				pass
 			else:
 				# The server raises 404(!) on parameter error
 				if res.status_code // 100 == 2: break
@@ -118,28 +121,34 @@ class Row(_Row):
 		          number=self.number, name=self.name, value=self.value)
 
 class Commission:
-	__slots__ = ['url', '_ppath', '_cache', '_page']
+	__slots__ = ['parent', 'url', '_cache', '_page']
 
-	def __init__(self, url, ppath, *, cache=None):
+	def __init__(self, parent, url, *, cache=None):
 		if cache is None:
-			cache = Cache()
+			if parent is not None:
+				cache = parent._cache
+			else:
+				cache = Cache()
+
+		self.parent = parent
 		self.url    = url
-		self._ppath = ppath
 		self._cache = cache
 		self._page  = dict()
 
 	def __repr__(self):
-		return '{}(url={!r}, ppath={!r}, hints={!r})'.format(
-			type(self).__qualname__,
-			self.url, self._ppath, self._hints)
+		return '{}(parent={!r}, url={!r})'.format(
+			type(self).__qualname__, self.url, self.parent)
 
 	def __pretty__(self, p, cycle):
 		prettyobj(p, cycle, type(self).__qualname__,
-		          urlpath=self.urlpath, ppath=self._ppath)
+		          parent=self.parent, url=self.url)
 
 	@property
 	def level(self):
-		return len(self._ppath)
+		if self.parent is not None:
+			return self.parent.level + 1
+		else:
+			return 0
 
 	async def page(self, session, type):
 		assert isinstance(type, str)
@@ -318,8 +327,6 @@ class Commission:
 		# empty string, we can't be sure we got them right, so use
 		# the fallback method.
 		if len(crumbs)-1 == self.level:
-			# NB. When the crumbs are missing from the parent, the
-			# text in crumbs[:-1] _can_ differ from self._ppath.
 			return normalize(crumbs[-1].string)
 
 		page = await self.page(session, '0')
@@ -334,12 +341,15 @@ class Commission:
 		                        .string)
 
 	async def path(self, session):
-		return self._ppath + [await self.name(session)]
+		if self.parent is not None:
+			ppath = await self.parent.path(session)
+		else:
+			ppath = []
+		return ppath + [await self.name(session)]
 
 	async def children(self, session):
-		path = await self.path(session)
 		page = await self.page(session, '0') # FIXME Any cached page would work
-		return (Commission(urljoin(self.url, o['value']), path,
+		return (Commission(self, urljoin(self.url, o['value']),
 		                   cache=self._cache)
 		        for o in page('option')
 		        if o.attrs.get('value'))
@@ -376,7 +386,7 @@ class Election(Commission):
 	def __init__(self, url, title=None, place=None, *, cache=None):
 		self.title = title
 		self.place = place
-		super().__init__(url, [], cache=cache)
+		super().__init__(None, url, cache=cache)
 
 	def __repr__(self):
 		return '{}(url={!r}, title={!r}, place={!r})'.format(
