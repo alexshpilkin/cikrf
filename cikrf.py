@@ -16,6 +16,18 @@ from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 _PARSER = 'html5lib'
 
+def prettyobj(p, cycle, typename, **named):
+	if cycle:
+		p.text(typename + '(...)')
+		return
+	with p.group(len(typename) + 1, typename + '(', ')'):
+		for i, (key, value) in enumerate(named.items()):
+			if i:
+				p.text(',')
+				p.breakable()
+			with p.group(len(key) + 1, key + '=', ''):
+				p.pretty(value)
+
 def urladjust(url, params=dict(), **named):
 	parts = urlsplit(url)
 	query = parse_qs(parts.query, strict_parsing=True)
@@ -91,8 +103,17 @@ class Cache:
 				content, _PARSER, from_encoding=encoding)
 		return self._page[url]
 
-Report = namedtuple('Report', ['records', 'results'])
-Row    = namedtuple('Row',    ['number', 'name', 'value'])
+_Report = namedtuple('_Report', ['records', 'results'])
+class Report(_Report):
+	def __pretty__(self, p, cycle):
+		prettyobj(p, cycle, type(self).__qualname__,
+		          records=self.records, results=self.results)
+
+_Row = namedtuple('_Row', ['number', 'name', 'value'])
+class Row(_Row):
+	def __pretty__(self, p, cycle):
+		prettyobj(p, cycle, type(self).__qualname__,
+		          number=self.number, name=self.name, value=self.value)
 
 class Commission:
 	__slots__ = ['url', 'purl', '_ppath', '_cache', '_children']
@@ -110,6 +131,14 @@ class Commission:
 		return('{}(url={!r}, purl={!r}, ppath={!r})'
 		       .format(type(self).__qualname__, self.url, self.purl,
 		               self._ppath))
+
+	def __pretty__(self, p, cycle):
+		prettyobj(p, cycle, type(self).__qualname__,
+		          urlpath=self.urlpath, ppath=self._ppath)
+
+	@property
+	def level(self):
+		return len(self._ppath)
 
 	def _page(self, session, type):
 		return self._cache.page(session,
@@ -269,10 +298,6 @@ class Commission:
 			for comm, records, results
 			in zip(comms, recordss, resultss))
 
-	@property
-	def level(self):
-		return len(self._ppath)
-
 	async def name(self, session):
 		page = await self._page(session, '0') # FIXME Any cached page would work
 		crumbs = page.find('table', height='80%').find('td')('a')
@@ -355,6 +380,10 @@ class Election(Commission):
 		       .format(type(self).__qualname__, self.url, self.title,
 		               self.place))
 
+	def __pretty__(self, p, cycle):
+		prettyobj(p, cycle, type(self).__qualname__, url=self.url,
+		          title=self.title, place=self.place)
+
 	_CONTEXT = 'http://example.org/election.jsonld' # FIXME
 
 	def tojson(self):
@@ -432,7 +461,7 @@ from collections import defaultdict as DefaultDict
 from contextlib import contextmanager
 from os import getenv, get_terminal_size
 from os.path import exists
-from pprint import pprint, pformat
+from pretty import pprint
 from random import seed, shuffle
 from sys import stdout, stderr
 from textwrap import shorten
@@ -478,7 +507,7 @@ async def collect_types(session, roots):
 			areps = [comm._parseaggregate(await comm._page(session, t))
 			         for n, t in ts.items() if     n.startswith('Сводн')]
 
-			pprint((comm.url, await comm.path(session), sreps, areps))
+			pprint((comm.url, await comm.path(session), sreps, areps), max_width=160)
 
 			skeys = [frozenset(r.name for r in rep.results)
 				 for rep in sreps if rep]
@@ -513,8 +542,8 @@ async def collect_types(session, roots):
 				await sleep(0)
 	finally:
 		clear()
-		pprint(dict(types), width=w)
-		pprint(list(map(list, tsets)), width=w)
+		pprint(dict(types), max_width=w)
+		pprint(list(map(list, tsets)), max_width=w)
 
 async def main():
 	global w
@@ -541,9 +570,9 @@ async def main():
 		await collect_types(session, els)
 
 #		elec = els[-2]
-#		pprint(dict(elec._parsesingle(await elec._page(session, '226'))._asdict()), width=w)
+#		pprint(dict(elec._parsesingle(await elec._page(session, '226'))._asdict()), max_width=w)
 #		print()
-#		pprint({k: dict(v._asdict()) for k, v in elec._parseaggregate(await elec._page(session, '227')).items()}, width=w)
+#		pprint({k: dict(v._asdict()) for k, v in elec._parseaggregate(await elec._page(session, '227')).items()}, max_width=w)
 #		return
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
