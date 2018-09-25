@@ -81,7 +81,7 @@ class Cache:
 	async def _download(self, session, url):
 		for delay in self._backoff():
 			try:
-				res = await session.get(url)
+				res = await session.get(url, timeout=60, connection_timeout=15)
 			except AsksException:
 				pass
 			except BrokenStreamError:
