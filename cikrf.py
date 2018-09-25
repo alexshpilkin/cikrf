@@ -13,6 +13,7 @@ from simplejsonseq   import dump, load
 from sys             import maxsize as MAXSIZE
 from trio            import BrokenStreamError, Queue, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
+from weakref         import WeakValueDictionary
 
 _PARSER = 'html5lib'
 
@@ -72,7 +73,7 @@ class Cache:
 		self.clear()
 
 	def clear(self):
-		self._page = dict()
+		self._page = WeakValueDictionary()
 
 	def _backoff(self):
 		return accumulate(chain([self.delay], repeat(self.rate)), mul)
@@ -97,11 +98,12 @@ class Cache:
 		return res.content, encoding
 
 	async def page(self, session, url):
-		if self._page.get(url) is None:
+		page = self._page.get(url)
+		if page is None:
 			content, encoding = await self._download(session, url)
-			self._page[url] = BeautifulSoup(
+			page = self._page[url] = BeautifulSoup(
 				content, _PARSER, from_encoding=encoding)
-		return self._page[url]
+		return page
 
 _Report = namedtuple('_Report', ['records', 'results'])
 class Report(_Report):
@@ -116,7 +118,7 @@ class Row(_Row):
 		          number=self.number, name=self.name, value=self.value)
 
 class Commission:
-	__slots__ = ['url', '_ppath', '_cache']
+	__slots__ = ['url', '_ppath', '_cache', '_page']
 
 	def __init__(self, url, ppath, *, cache=None):
 		if cache is None:
@@ -124,6 +126,7 @@ class Commission:
 		self.url    = url
 		self._ppath = ppath
 		self._cache = cache
+		self._page  = dict()
 
 	def __repr__(self):
 		return '{}(url={!r}, ppath={!r}, hints={!r})'.format(
@@ -138,9 +141,13 @@ class Commission:
 	def level(self):
 		return len(self._ppath)
 
-	def _page(self, session, type):
-		return self._cache.page(session,
-		                        urladjust(self.url, type=type))
+	async def page(self, session, type):
+		assert isinstance(type, str)
+		page = self._page.get(type)
+		if page is None:
+			page = self._page[type] = await self._cache.page(
+				session, urladjust(self.url, type=type))
+		return page
 
 	@staticmethod
 	def _parsetypes(page):
@@ -293,7 +300,7 @@ class Commission:
 			in zip(comms, recordss, resultss))
 
 	async def name(self, session):
-		page = await self._page(session, '0') # FIXME Any cached page would work
+		page = await self.page(session, '0') # FIXME Any cached page would work
 		crumbs = page.find('table', height='80%').find('td')('a')
 		# If the crumbs are absent, or if one of the crumbs is the
 		# empty string, we can't be sure we got them right, so use
@@ -303,7 +310,7 @@ class Commission:
 			# text in crumbs[:-1] _can_ differ from self._ppath.
 			return normalize(crumbs[-1].string)
 
-		page = await self._page(session, '0')
+		page = await self.page(session, '0')
 		caption = page.find(string=[
 			matches('наименование комиссии'),
 			matches('наименование избирательной комиссии')])
@@ -319,7 +326,7 @@ class Commission:
 
 	async def children(self, session):
 		path = await self.path(session)
-		page = await self._page(session, '0') # FIXME Any cached page would work
+		page = await self.page(session, '0') # FIXME Any cached page would work
 		return (Commission(urljoin(self.url, o['value']), path,
 		                   cache=self._cache)
 		        for o in page('option')
@@ -382,7 +389,7 @@ class Election(Commission):
 		return cls(**data)
 
 	async def date(self, session):
-		page = await self._page(session, '0')
+		page = await self.page(session, '0')
 		capt = page.find(string=matches('дата голосования'))
 		if capt is None:
 			assert nodata(page)
@@ -416,7 +423,7 @@ class Election(Commission):
 			'region'     : '0', # FIXME whole country
 		}
 		res = await session.post(SEARCH, data=payload)
-		# FIXME Proper encoding detection as in Cache._page()
+		# FIXME Proper encoding detection as in Cache.page()
 		doc = BeautifulSoup(res.text, _PARSER)
 
 		place = []
@@ -482,13 +489,13 @@ async def collect_types(session, roots):
 	async def visit(title, comm):
 		nonlocal done, last
 		with exceptions(comm.url):
-			ts = comm._parsetypes(await comm._page(session, '0'))['результаты выборов']
+			ts = comm._parsetypes(await comm.page(session, '0'))['результаты выборов']
 			for n, t in ts.items(): types[t].add(n)
 			tsets.add(tuple(ts.values()))
 
-			sreps = [comm._parsesingle(await comm._page(session, t))
+			sreps = [comm._parsesingle(await comm.page(session, t))
 			         for n, t in ts.items() if not n.startswith('Сводн')]
-			areps = [comm._parseaggregate(await comm._page(session, t))
+			areps = [comm._parseaggregate(await comm.page(session, t))
 			         for n, t in ts.items() if     n.startswith('Сводн')]
 
 			pprint((comm.url, await comm.path(session), sreps, areps), max_width=160)
@@ -554,9 +561,9 @@ async def main():
 		await collect_types(session, els)
 
 #		elec = els[-2]
-#		pprint(dict(elec._parsesingle(await elec._page(session, '226'))._asdict()), max_width=w)
+#		pprint(dict(elec._parsesingle(await elec.page(session, '226'))._asdict()), max_width=w)
 #		print()
-#		pprint({k: dict(v._asdict()) for k, v in elec._parseaggregate(await elec._page(session, '227')).items()}, max_width=w)
+#		pprint({k: dict(v._asdict()) for k, v in elec._parseaggregate(await elec.page(session, '227')).items()}, max_width=w)
 #		return
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
