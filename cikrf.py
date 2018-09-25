@@ -116,15 +116,14 @@ class Row(_Row):
 		          number=self.number, name=self.name, value=self.value)
 
 class Commission:
-	__slots__ = ['url', '_ppath', '_cache', '_children']
+	__slots__ = ['url', '_ppath', '_cache']
 
 	def __init__(self, url, ppath, *, cache=None):
 		if cache is None:
 			cache = Cache()
-		self.url       = url
-		self._ppath    = ppath
-		self._cache    = cache
-		self._children = None
+		self.url    = url
+		self._ppath = ppath
+		self._cache = cache
 
 	def __repr__(self):
 		return '{}(url={!r}, ppath={!r}, hints={!r})'.format(
@@ -319,21 +318,12 @@ class Commission:
 		return self._ppath + [await self.name(session)]
 
 	async def children(self, session):
-		if self._children is None:
-			page = await self._page(session, '0') # FIXME Any cached page would work
-			self._children = \
-				[Commission(urljoin(self.url, o['value']),
-				            await self.path(session),
-				            cache=self._cache)
-				 for o in page('option')
-				 if o.attrs.get('value')]
-			if not self._children:
-				assert page.find(string=matches(
-					"нет отчета по навигации или же это "
-					"конечный твд == уик"))
-		else:
-			await sleep(0)
-		return self._children
+		path = await self.path(session)
+		page = await self._page(session, '0') # FIXME Any cached page would work
+		return (Commission(urljoin(self.url, o['value']), path,
+		                   cache=self._cache)
+		        for o in page('option')
+		        if o.attrs.get('value'))
 
 	@asynccontextmanager
 	async def walk(self, session, depth=MAXSIZE):
