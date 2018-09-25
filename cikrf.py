@@ -179,6 +179,10 @@ class Commission:
 		             if k != 'финансовые отчеты')
 		return types
 
+	async def types(self, session):
+		page = await self.page(session, '0')
+		return self._parsetypes(page)
+
 	@staticmethod
 	def _parsehorz(table):
 		rows = [tr('td') for tr in table('tr')]
@@ -249,6 +253,10 @@ class Commission:
 		assert not tabs
 		return Report(records=records, results=results)
 
+	async def single(self, session, type):
+		page = await self.page(session, type)
+		return self._parsesingle(page)
+
 	@classmethod
 	def _parseaggregate(cls, page):
 		tabs = page(cellpadding='2')
@@ -298,6 +306,10 @@ class Commission:
 			(comm, Report(records=records, results=results))
 			for comm, records, results
 			in zip(comms, recordss, resultss))
+
+	async def aggregate(self, session, type):
+		page = await self.page(session, type)
+		return self._parseaggregate(page)
 
 	async def name(self, session):
 		page = await self.page(session, '0') # FIXME Any cached page would work
@@ -489,14 +501,16 @@ async def collect_types(session, roots):
 	async def visit(title, comm):
 		nonlocal done, last
 		with exceptions(comm.url):
-			ts = comm._parsetypes(await comm.page(session, '0'))['результаты выборов']
+			ts = (await comm.types(session))['результаты выборов']
 			for n, t in ts.items(): types[t].add(n)
 			tsets.add(tuple(ts.values()))
 
-			sreps = [comm._parsesingle(await comm.page(session, t))
-			         for n, t in ts.items() if not n.startswith('Сводн')]
-			areps = [comm._parseaggregate(await comm.page(session, t))
-			         for n, t in ts.items() if     n.startswith('Сводн')]
+			sreps = [await comm.single(session, t)
+			         for n, t in ts.items()
+			         if not n.startswith('Сводн')]
+			areps = [await comm.aggregate(session, t)
+			         for n, t in ts.items()
+			         if n.startswith('Сводн')]
 
 			pprint((comm.url, await comm.path(session), sreps, areps), max_width=160)
 
@@ -561,9 +575,9 @@ async def main():
 		await collect_types(session, els)
 
 #		elec = els[-2]
-#		pprint(dict(elec._parsesingle(await elec.page(session, '226'))._asdict()), max_width=w)
+#		pprint(await elec.single(session, '226'), max_width=w)
 #		print()
-#		pprint({k: dict(v._asdict()) for k, v in elec._parseaggregate(await elec.page(session, '227')).items()}, max_width=w)
+#		pprint(await elec.aggregate(session, '227'), max_width=w)
 #		return
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
