@@ -122,10 +122,7 @@ class Commission:
 
 	def __init__(self, parent, url, *, cache=None):
 		if cache is None:
-			if parent is not None:
-				cache = parent._cache
-			else:
-				cache = Cache()
+			cache = parent._cache
 
 		self.parent = parent
 		self.url    = url
@@ -346,10 +343,8 @@ class Commission:
 
 	async def children(self, session):
 		page = await self.page(session, '0') # FIXME Any cached page would work
-		return (Commission(self, urljoin(self.url, o['value']),
-		                   cache=self._cache)
-		        for o in page('option')
-		        if o.attrs.get('value'))
+		return (Commission(self, urljoin(self.url, o['value']))
+		        for o in page('option') if o.attrs.get('value'))
 
 	@asynccontextmanager
 	async def walk(self, session, depth=MAXSIZE):
@@ -381,9 +376,12 @@ class Election(Commission):
 	__slots__ = ['title', 'place', 'root']
 
 	def __init__(self, url, title=None, place=None, *, cache=None):
+		if cache is None:
+			cache = Cache()
+
+		super().__init__(None, url, cache=cache)
 		self.title = title
 		self.place = place
-		super().__init__(None, url, cache=cache)
 
 	def __repr__(self):
 		return '{}(url={!r}, title={!r}, place={!r})'.format(
