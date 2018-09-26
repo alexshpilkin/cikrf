@@ -66,12 +66,13 @@ class Scope(Enum):
 	# SETTLMNT FIXME
 
 class Cache:
-	__slots__ = ['delay', 'rate', '_page']
+	__slots__ = ['delay', 'rate', '_page', '_commission']
 
 	def __init__(self, delay=0.25, rate=sqrt(2)):
 		self.delay = delay
-		self.rate  = rate
+		self.rate = rate
 		self._page = WeakValueDictionary()
+		self._commission = WeakValueDictionary()
 
 	def _backoff(self):
 		return accumulate(chain([self.delay], repeat(self.rate)), mul)
@@ -105,6 +106,13 @@ class Cache:
 				content, _PARSER, from_encoding=encoding)
 		return page
 
+	def commission(self, parent, url):
+		comm = self._commission.get(url)
+		if comm is None:
+			comm = self._commission[url] = Commission(parent, url)
+		assert comm.parent == parent
+		return comm
+
 _Report = namedtuple('_Report', ['records', 'results'])
 class Report(_Report):
 	def __pretty__(self, p, cycle):
@@ -118,7 +126,7 @@ class Row(_Row):
 		          number=self.number, name=self.name, value=self.value)
 
 class Commission:
-	__slots__ = ['parent', 'url', '_cache', '_page']
+	__slots__ = ['parent', 'url', '_cache', '_page', '__weakref__']
 
 	def __init__(self, parent, url, *, cache=None):
 		if cache is None:
@@ -343,7 +351,8 @@ class Commission:
 
 	async def children(self, session):
 		page = await self.page(session, '0') # FIXME Any cached page would work
-		return (Commission(self, urljoin(self.url, o['value']))
+		return (self._cache.commission(
+				self, urljoin(self.url, o['value']))
 		        for o in page('option') if o.attrs.get('value'))
 
 	@asynccontextmanager
