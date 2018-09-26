@@ -71,9 +71,6 @@ class Cache:
 	def __init__(self, delay=0.25, rate=sqrt(2)):
 		self.delay = delay
 		self.rate  = rate
-		self.clear()
-
-	def clear(self):
 		self._page = WeakValueDictionary()
 
 	def _backoff(self):
@@ -137,7 +134,7 @@ class Commission:
 
 	def __repr__(self):
 		return '{}(parent={!r}, url={!r})'.format(
-			type(self).__qualname__, self.url, self.parent)
+			type(self).__qualname__, self.parent, self.url)
 
 	def __pretty__(self, p, cycle):
 		prettyobj(p, cycle, type(self).__qualname__,
