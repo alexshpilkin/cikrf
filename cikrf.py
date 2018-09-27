@@ -115,12 +115,22 @@ class Cache:
 
 _Result = namedtuple('_Result', ['records', 'votes'])
 class Result(_Result):
+	__slots__ = []
 	def __pretty__(self, p, cycle):
 		prettyobj(p, cycle, type(self).__qualname__,
 		          records=self.records, votes=self.votes)
 
+_NamedResult = namedtuple('_NamedResult', ['records', 'votes', 'name'])
+class NamedResult(_NamedResult):
+	__slots__ = []
+	def __pretty__(self, p, cycle):
+		prettyobj(p, cycle, type(self).__qualname__,
+		          records=self.records, votes=self.votes,
+		          name=self.name)
+
 _Row = namedtuple('_Row', ['number', 'name', 'value'])
 class Row(_Row):
+	__slots__ = []
 	def __pretty__(self, p, cycle):
 		prettyobj(p, cycle, type(self).__qualname__,
 		          number=self.number, name=self.name, value=self.value)
@@ -185,7 +195,7 @@ class Commission:
 				assert types.get(t) is None
 				types[t] = [category, normalize(s)]
 			elif s:
-				category = normalize(s).casefold()
+				category = normalize(s)
 
 		return types
 
@@ -320,6 +330,30 @@ class Commission:
 	async def aggregate(self, session, type):
 		page = await self.page(session, type)
 		return self._parseaggregate(page)
+
+	async def results(self, session):
+		types = await self.types(session)
+		results = OrderedDict()
+
+		async def fetch(type, name):
+			res = await self.single(session, type)
+			if res is not None:
+				results[type] = NamedResult(
+					name=name, **res._asdict())
+
+		async with open_nursery() as nursery:
+			for type, name in types.items():
+				if (len(name) != 2 or
+				    name[0].casefold() != 'результаты выборов' or
+				    name[1].casefold().startswith('сводн')):
+					continue
+				results[type] = None
+				nursery.start_soon(fetch, type, name)
+				await sleep(0)
+			while nursery.child_tasks:
+				await sleep(0)
+
+		return results
 
 	async def name(self, session):
 		page = await self.page(session, 0) # FIXME Any cached page would work
@@ -516,7 +550,7 @@ async def collect_types(session, roots):
 		with exceptions(comm.url):
 			ts = [(t, n) for t, (c, n)
 			      in (await comm.types(session)).items()
-			      if c == 'результаты выборов']
+			      if c.casefold() == 'результаты выборов']
 			for t, n in ts: types[t].add(n)
 			tsets.add(tuple(t for t, n in ts))
 
@@ -525,7 +559,7 @@ async def collect_types(session, roots):
 			aggr = [await comm.aggregate(session, t)
 			        for t, n in ts if n.startswith('Сводн')]
 
-			pprint((comm.url, await comm.path(session), sing, aggr), max_width=160)
+			pprint((comm.url, await comm.path(session), await comm.results(session)), max_width=160)
 
 			skeys = [frozenset(v.name for v in res.votes)
 				 for res in sing if res]
