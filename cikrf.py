@@ -54,6 +54,9 @@ def contains(string):
 	def match(s): return s and string in normalize(s)
 	return match
 
+def strings(node):
+	return normalize(' '.join(s.string for s in node(string=True)))
+
 def nodata(page):
 	mess = page.find(string=matches('нет данных для построения отчета.'))
 	return mess is not None
@@ -186,8 +189,7 @@ class Commission:
 				continue
 
 			a = row.find('a')
-			s = normalize(' '.join(p.string
-			                       for p in row(string=True)))
+			s = strings(row)
 			if a is not None:
 				t = parse_qs(urlsplit(a['href']).query).get('type', [None])[0]
 				if t is None: continue
@@ -211,10 +213,11 @@ class Commission:
 		# Sort into separator and data lines
 		seps = [i for i, row in enumerate(rows)
 		          if len(row) < 3 or not row[2](string=normalize)]
-		data = [Row(number=normalize(row[0].find(string=True).string),
+		data = [Row(number=strings(row[0]),
 		            # strip the (inconsistent) candidate numbering
-		            name=normalize(row[1].find(string=True).string)
-		                .lstrip('0123456789. '),
+		            name=strings(row[1]).lstrip('0123456789. '),
+		            # cells sometimes include percentages as well,
+		            # so use only the first string node
 		            value=int(row[2].find(string=True).string))
 		        for i, row in enumerate(rows) if i not in seps]
 
@@ -235,8 +238,7 @@ class Commission:
 		data = (row for i, row in enumerate(rows) if i not in seps)
 
 		assert rows[0][0].find(string=normalize)  # child names
-		comms = [normalize(td.find(string=True).string)
-		         for td in rows[0]]
+		comms = [strings(td) for td in rows[0]]
 		datas = [[h._replace(value=int(v.find(string=True).string))
 		          for h, v in zip(head, col)]
 		         for col in zip(*data)]
