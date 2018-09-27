@@ -153,7 +153,7 @@ class Commission:
 			return 0
 
 	async def page(self, session, type):
-		assert isinstance(type, str)
+		assert isinstance(type, int)
 		page = self._page.get(type)
 		if page is None:
 			page = self._page[type] = await self._cache.page(
@@ -181,6 +181,7 @@ class Commission:
 			if a is not None:
 				t = parse_qs(urlsplit(a['href']).query).get('type', [None])[0]
 				if t is None: continue
+				t = int(t)
 				assert types.get(t) is None
 				types[t] = [category, normalize(s)]
 			elif s:
@@ -189,7 +190,7 @@ class Commission:
 		return types
 
 	async def types(self, session):
-		page = await self.page(session, '0')
+		page = await self.page(session, 0)
 		return self._parsetypes(page)
 
 	@staticmethod
@@ -321,7 +322,7 @@ class Commission:
 		return self._parseaggregate(page)
 
 	async def name(self, session):
-		page = await self.page(session, '0') # FIXME Any cached page would work
+		page = await self.page(session, 0) # FIXME Any cached page would work
 		crumbs = page.find('table', height='80%').find('td')('a')
 		# If the crumbs are absent, or if one of the crumbs is the
 		# empty string, we can't be sure we got them right, so use
@@ -329,7 +330,7 @@ class Commission:
 		if len(crumbs)-1 == self.level:
 			return normalize(crumbs[-1].string)
 
-		page = await self.page(session, '0')
+		page = await self.page(session, 0)
 		caption = page.find(string=[
 			matches('наименование комиссии'),
 			matches('наименование избирательной комиссии')])
@@ -348,7 +349,7 @@ class Commission:
 		return ppath + [await self.name(session)]
 
 	async def children(self, session):
-		page = await self.page(session, '0') # FIXME Any cached page would work
+		page = await self.page(session, 0) # FIXME Any cached page would work
 		return (self._cache.commission(
 				self, urljoin(self.url, o['value']))
 		        for o in page('option') if o.attrs.get('value'))
@@ -413,7 +414,7 @@ class Election(Commission):
 		return cls(**data)
 
 	async def date(self, session):
-		page = await self.page(session, '0')
+		page = await self.page(session, 0)
 		capt = page.find(string=matches('дата голосования'))
 		if capt is None:
 			assert nodata(page)
