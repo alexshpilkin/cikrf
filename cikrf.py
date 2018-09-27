@@ -113,11 +113,11 @@ class Cache:
 		assert comm.parent == parent
 		return comm
 
-_Report = namedtuple('_Report', ['records', 'results'])
-class Report(_Report):
+_Result = namedtuple('_Result', ['records', 'votes'])
+class Result(_Result):
 	def __pretty__(self, p, cycle):
 		prettyobj(p, cycle, type(self).__qualname__,
-		          records=self.records, results=self.results)
+		          records=self.records, votes=self.votes)
 
 _Row = namedtuple('_Row', ['number', 'name', 'value'])
 class Row(_Row):
@@ -243,13 +243,13 @@ class Commission:
 			        page(string=contains('необходимо перейти')))
 			return None
 
-		records, results = [], []
+		records, votes = [], []
 
 		# Main table
 		data, seps, start, end = cls._parsehorz(tabs[0])
 		if start < len(seps):  # at least two data parts
 			records += data[: seps[start]-start]
-			results += data[seps[end-1]-end+1 :]
+			votes   += data[seps[end-1]-end+1 :]
 			tabs = tabs[1:]
 		elif not data:  # empty table
 			tabs = tabs[1:]
@@ -262,7 +262,7 @@ class Commission:
 			tabs = tabs[1:]
 
 		assert not tabs
-		return Report(records=records, results=results)
+		return Result(records=records, votes=votes)
 
 	async def single(self, session, type):
 		page = await self.page(session, type)
@@ -277,7 +277,7 @@ class Commission:
 			        page(string=contains('необходимо перейти')))
 			return OrderedDict()
 
-		comms, recordss, resultss = [], [], []
+		comms, recordss, votess = [], [], []
 
 		# Main table: left table is titles, right is data per child
 		head, seps, start, end = cls._parsehorz(tabs[0])
@@ -289,7 +289,7 @@ class Commission:
 		if start < len(seps):  # at least two data parts
 			comms, datas = cls._parsevert(tabs[1], head, seps)
 			recordss += [d[: seps[start]-start] for d in datas]
-			resultss += [d[seps[end-1]-end+1 :] for d in datas]
+			votess   += [d[seps[end-1]-end+1 :] for d in datas]
 			tabs = tabs[2:]
 		elif not head:  # empty table
 			assert not tabs[1](string=normalize)
@@ -314,9 +314,9 @@ class Commission:
 
 		assert not tabs
 		return OrderedDict(
-			(comm, Report(records=records, results=results))
-			for comm, records, results
-			in zip(comms, recordss, resultss))
+			(comm, Result(records=records, votes=votes))
+			for comm, records, votes
+			in zip(comms, recordss, votess))
 
 	async def aggregate(self, session, type):
 		page = await self.page(session, type)
@@ -519,19 +519,19 @@ async def collect_types(session, roots):
 			for n, t in ts.items(): types[t].add(n)
 			tsets.add(tuple(ts.values()))
 
-			sreps = [await comm.single(session, t)
-			         for n, t in ts.items()
-			         if not n.startswith('Сводн')]
-			areps = [await comm.aggregate(session, t)
-			         for n, t in ts.items()
-			         if n.startswith('Сводн')]
+			sing = [await comm.single(session, t)
+			        for n, t in ts.items()
+			        if not n.startswith('Сводн')]
+			aggr = [await comm.aggregate(session, t)
+			        for n, t in ts.items()
+			        if n.startswith('Сводн')]
 
-			pprint((comm.url, await comm.path(session), sreps, areps), max_width=160)
+			pprint((comm.url, await comm.path(session), sing, aggr), max_width=160)
 
-			skeys = [frozenset(r.name for r in rep.results)
-				 for rep in sreps if rep]
-			akeys = [frozenset(r.name for r in reps.popitem()[1].results)
-				 for reps in areps if reps]
+			skeys = [frozenset(v.name for v in res.votes)
+				 for res in sing if res]
+			akeys = [frozenset(v.name for v in ress.popitem()[1].votes)
+				 for ress in aggr if ress]
 			assert list(sorted(set(skeys), key=str)) == list(sorted(skeys, key=str))
 			assert list(sorted(set(akeys), key=str)) == list(sorted(akeys, key=str))
 			assert set(akeys) <= set(skeys)
