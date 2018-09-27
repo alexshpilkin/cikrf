@@ -162,7 +162,7 @@ class Commission:
 
 	@staticmethod
 	def _parsetypes(page):
-		types = DefaultDict(OrderedDict)
+		types = OrderedDict()
 		pivot = page.find('img', src='img/form.gif')
 		if pivot is None:
 			return types
@@ -181,13 +181,11 @@ class Commission:
 			if a is not None:
 				t = parse_qs(urlsplit(a['href']).query).get('type', [None])[0]
 				if t is None: continue
-				types[category][normalize(s)] = t
+				assert types.get(t) is None
+				types[t] = [category, normalize(s)]
 			elif s:
 				category = normalize(s).casefold()
-				assert not types[category]
 
-		assert all(v for k, v in types.items()
-		             if k != 'финансовые отчеты')
 		return types
 
 	async def types(self, session):
@@ -515,16 +513,16 @@ async def collect_types(session, roots):
 	async def visit(title, comm):
 		nonlocal done, last
 		with exceptions(comm.url):
-			ts = (await comm.types(session))['результаты выборов']
-			for n, t in ts.items(): types[t].add(n)
-			tsets.add(tuple(ts.values()))
+			ts = [(t, n) for t, (c, n)
+			      in (await comm.types(session)).items()
+			      if c == 'результаты выборов']
+			for t, n in ts: types[t].add(n)
+			tsets.add(tuple(t for t, n in ts))
 
 			sing = [await comm.single(session, t)
-			        for n, t in ts.items()
-			        if not n.startswith('Сводн')]
+			        for t, n in ts if not n.startswith('Сводн')]
 			aggr = [await comm.aggregate(session, t)
-			        for n, t in ts.items()
-			        if n.startswith('Сводн')]
+			        for t, n in ts if n.startswith('Сводн')]
 
 			pprint((comm.url, await comm.path(session), sing, aggr), max_width=160)
 
