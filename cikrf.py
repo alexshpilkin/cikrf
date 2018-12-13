@@ -12,7 +12,7 @@ from operator        import mul
 from simplejsonseq   import dump, load
 from socket          import gaierror as GAIError
 from sys             import maxsize as MAXSIZE
-from trio            import BrokenStreamError, Queue, open_nursery, run, sleep
+from trio            import BrokenResourceError, Queue, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 from weakref         import WeakValueDictionary
 
@@ -86,7 +86,7 @@ class Cache:
 				res = await session.get(url, timeout=60, connection_timeout=15)
 			except AsksException:
 				pass
-			except BrokenStreamError:
+			except BrokenResourceError:
 				pass
 			except ConnectionError:
 				pass
