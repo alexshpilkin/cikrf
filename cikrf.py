@@ -7,6 +7,7 @@ from contextlib      import asynccontextmanager
 from datetime        import date as Date, datetime as DateTime
 from enum            import Enum
 from itertools       import accumulate, chain, repeat
+from lxml.html       import document_fromstring as HTML
 from math            import inf, sqrt
 from operator        import mul
 from simplejsonseq   import dump, load
@@ -62,6 +63,14 @@ def nodata(page):
 	mess = page.find(string=matches('нет данных для построения отчета.'))
 	return mess is not None
 
+def xstrings(node):
+	return normalize(' '.join(node.xpath('.//text()')))
+
+def xnodata(page):
+	mess = page.xpath('.//text()[normalize-space()="Нет '
+	                  'данных для построения отчета.")]')
+	return bool(mess)
+
 class Scope(Enum):
 	COUNTRY  = '1'
 	PROVINCE = '2'
@@ -70,12 +79,13 @@ class Scope(Enum):
 	# SETTLMNT FIXME
 
 class Cache:
-	__slots__ = ['delay', 'rate', '_page', '_commission']
+	__slots__ = ['delay', 'rate', '_page', '_xpage', '_commission']
 
 	def __init__(self, delay=0.25, rate=sqrt(2)):
 		self.delay = delay
 		self.rate = rate
 		self._page = WeakValueDictionary()
+		self._xpage = WeakValueDictionary()
 		self._commission = WeakValueDictionary()
 
 	def _backoff(self):
@@ -97,17 +107,21 @@ class Cache:
 				# The server raises 404(!) on parameter error
 				if res.status_code // 100 == 2: break
 			await sleep(delay)
-		encoding = (res.encoding.lower()
-		            if 'charset' in res.headers.get('content-type')
-		            else None) # FIXME unreliable (change in asks?)
-		return res.content, encoding
+		return res.content.decode(res.encoding.lower())
 
 	async def page(self, session, url):
 		page = self._page.get(url)
 		if page is None:
-			content, encoding = await self._download(session, url)
+			content = await self._download(session, url)
 			page = self._page[url] = BeautifulSoup(
-				content, _PARSER, from_encoding=encoding)
+				content, _PARSER)
+		return page
+
+	async def xpage(self, session, url):
+		page = self._xpage.get(url)
+		if page is None:
+			content = await self._download(session, url)
+			page = self._xpage[url] = HTML(content)
 		return page
 
 	def commission(self, parent, url):
@@ -140,7 +154,8 @@ class Row(_Row):
 		          number=self.number, name=self.name, value=self.value)
 
 class Commission:
-	__slots__ = ['parent', 'url', '_cache', '_page', '__weakref__']
+	__slots__ = ['parent', 'url', '_cache', '_page', '_xpage',
+	             '__weakref__']
 
 	def __init__(self, parent, url, *, cache=None):
 		if cache is None:
@@ -150,6 +165,7 @@ class Commission:
 		self.url    = url
 		self._cache = cache
 		self._page  = dict()
+		self._xpage = dict()
 
 	def __repr__(self):
 		return '{}(parent={!r}, url={!r})'.format(
@@ -174,28 +190,37 @@ class Commission:
 				session, urladjust(self.url, type=type))
 		return page
 
+	async def xpage(self, session, type):
+		assert isinstance(type, int)
+		page = self._xpage.get(type)
+		if page is None:
+			page = self._xpage[type] = await self._cache.xpage(
+				session, urladjust(self.url, type=type))
+		return page
+
 	@staticmethod
 	def _parsetypes(page):
 		types = OrderedDict()
-		pivot = page.find('img', src='img/form.gif')
-		if pivot is None:
+		pivot = page.xpath('.//img[@src="img/form.gif"]')
+		if not pivot:
 			return types
 
-		rows = pivot.find_parent('table')('tr')
+		rows = pivot[0].xpath('ancestor::table[1]//tr')
 		category = None
 		for row in rows:
-			if (not isinstance(row, Tag) or
-			    row.find(class_='headers') is not None or
-			    row.find(class_='folder') is not None):
+			if (row.xpath('.//*[@class="headers"]') or
+			    row.xpath('.//*[@class="folder"]')):
 				continue
 
-			a = row.find('a')
-			s = strings(row)
+			a, = row.xpath('.//a') or (None,)
+			s  = xstrings(row)
 			if a is not None:
-				t = parse_qs(urlsplit(a['href']).query).get('type', [None])[0]
+				t = (parse_qs(urlsplit(a.get('href')).query)
+				             .get('type', [None])[0])
 				if t is None: continue
 				t = int(t)
 				assert types.get(t) is None
+				assert category is not None
 				types[t] = [category, normalize(s)]
 			elif s:
 				category = normalize(s)
@@ -203,7 +228,7 @@ class Commission:
 		return types
 
 	async def types(self, session):
-		page = await self.page(session, 0)
+		page = await self.xpage(session, 0)
 		return self._parsetypes(page)
 
 	@staticmethod
@@ -347,8 +372,7 @@ class Commission:
 		async with open_nursery() as nursery:
 			for type, name in types.items():
 				assert len(name) == 2
-				if (name[0] is None or
-				    name[0].casefold() != 'результаты выборов' or
+				if (name[0].casefold() != 'результаты выборов' or
 				    name[1].casefold().startswith('сводн')):
 					continue
 				results[type] = None
@@ -482,24 +506,30 @@ class Election(Commission):
 		}
 		res = await session.post(SEARCH, data=payload)
 		# FIXME Proper encoding detection as in Cache.page()
-		doc = BeautifulSoup(res.text, _PARSER)
+		doc = HTML(res.text)
 
+		# General form:
+		# <tr>
+		#   <td><nobr><b>PROVINCE</b></nobr><br>MUNICIPALITY</td>
+		#   <td><a class="vibLink" href="...">TITLE</a></td>
+		# </tr>
 		place = []
-		for a in doc('a', class_='vibLink'):
-			cell  = a.find_parent('tr').find('td')
-			anode = cell.find('b')
+		for a in doc.xpath('.//a[@class="vibLink"]'):
+			assert len(a) <= 1
+			cell,  = a.xpath('ancestor::tr[1]/td[1]')
+			anode, = cell.xpath('.//b') or (None,)
 			if anode is not None:
-				place = ([normalize(anode.string)]
-					 if anode.string != 'Российская Федерация'
+				place = ([normalize(anode.text)]
+					 if anode.text != 'Российская Федерация'
 					 else [])
-			dnode = cell.find(string=True, recursive=False)
+			dnode, = cell.xpath('text()') or (None,)
 			if dnode is not None and dnode.strip():
 				assert len(place) >= 1
 				place = place[:1] + [dnode.strip()]
 
-			yield cls(url=urladjust(urljoin(SEARCH, a['href']),
+			yield cls(url=urladjust(urljoin(SEARCH, a.get('href')),
 			                        sub_region=['99']),
-			          title=normalize(a.string),
+			          title=normalize(a.text),
 			          place=list(place),
 			          cache=cache)
 
@@ -604,7 +634,7 @@ async def main():
 	params = {
 #		'start': Date(2003,1,1),
 #		'end': Date(2004,1,1),
-#		'scope': Scope.COUNTRY,
+		'scope': Scope.COUNTRY,
 	}
 	filename = 'elections.jsonseq'
 
@@ -612,7 +642,7 @@ async def main():
 		if not exists(filename):
 			with open(filename, 'w', encoding='utf-8') as fp:
 				async for e in Election.search(session, **params):
-					dump([e.tojson()], fp, flush=True, ensure_ascii=False, indent=2)
+					dump([e.tojson()], fp, ensure_ascii=False, indent=2)
 
 		with open(filename, 'r') as fp:
 			els = list(Election.fromjson(obj) for obj in load(fp))
