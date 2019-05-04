@@ -7,12 +7,12 @@ from contextlib      import asynccontextmanager
 from datetime        import date as Date, datetime as DateTime
 from enum            import Enum
 from itertools       import accumulate, chain, repeat
-from math            import sqrt
+from math            import inf, sqrt
 from operator        import mul
 from simplejsonseq   import dump, load
 from socket          import gaierror as GAIError
-from sys             import maxsize as MAXSIZE
-from trio            import BrokenResourceError, Queue, open_nursery, run, sleep
+from trio            import BrokenResourceError, CapacityLimiter, Queue, \
+                            TASK_STATUS_IGNORED, open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 from weakref         import WeakValueDictionary
 
@@ -345,7 +345,8 @@ class Commission:
 
 		async with open_nursery() as nursery:
 			for type, name in types.items():
-				if (len(name) != 2 or
+				assert len(name) == 2
+				if (name[0] is None or
 				    name[0].casefold() != 'результаты выборов' or
 				    name[1].casefold().startswith('сводн')):
 					continue
@@ -391,7 +392,7 @@ class Commission:
 		        for o in page('option') if o.attrs.get('value'))
 
 	@asynccontextmanager
-	async def walk(self, session, depth=MAXSIZE):
+	async def walk(self, session, depth=inf):
 		queue = Queue(0)
 
 		async with open_nursery() as nursery:
@@ -547,50 +548,52 @@ async def collect_types(session, roots):
 	done  = 0
 	last  = None
 
-	async def visit(title, comm):
+	async def visit(title, comm, limit, *,
+	                task_status=TASK_STATUS_IGNORED):
 		nonlocal done, last
-		with exceptions(comm.url):
-			ts = [(t, n) for t, (c, n)
-			      in (await comm.types(session)).items()
-			      if c.casefold() == 'результаты выборов']
-			for t, n in ts: types[t].add(n)
-			tsets.add(tuple(t for t, n in ts))
+		async with limit:
+			task_status.started()
+			with exceptions(comm.url):
+				ts = [(t, n) for t, (c, n)
+				      in (await comm.types(session)).items()
+				      if c.casefold() == 'результаты выборов']
+				for t, n in ts: types[t].add(n)
+				tsets.add(tuple(t for t, n in ts))
 
-			sing = [await comm.single(session, t)
-			        for t, n in ts if not n.startswith('Сводн')]
-			aggr = [await comm.aggregate(session, t)
-			        for t, n in ts if n.startswith('Сводн')]
+				sing = [await comm.single(session, t)
+					for t, n in ts if not n.startswith('Сводн')]
+				aggr = [await comm.aggregate(session, t)
+					for t, n in ts if n.startswith('Сводн')]
 
-			pprint((comm.url, await comm.path(session), await comm.results(session)), max_width=160)
+				pprint((comm.url, await comm.path(session), await comm.results(session)), max_width=160)
 
-			skeys = [frozenset(v.name for v in res.votes)
-				 for res in sing if res]
-			akeys = [frozenset(v.name for v in ress.popitem()[1].votes)
-				 for ress in aggr if ress]
-			assert list(sorted(set(skeys), key=str)) == list(sorted(skeys, key=str))
-			assert list(sorted(set(akeys), key=str)) == list(sorted(akeys, key=str))
-			assert set(akeys) <= set(skeys)
+				skeys = [frozenset(v.name for v in res.votes)
+					 for res in sing if res]
+				akeys = [frozenset(v.name for v in ress.popitem()[1].votes)
+					 for ress in aggr if ress]
+				assert list(sorted(set(skeys), key=str)) == list(sorted(skeys, key=str))
+				assert list(sorted(set(akeys), key=str)) == list(sorted(akeys, key=str))
+				assert set(akeys) <= set(skeys)
 
-			last = ('/'.join(c if c is not None else '!'
-			                 for c in await comm.path(session)) +
-			        ': ' + title)
-			done += 1
+				last = ('/'.join(c if c is not None else '!'
+					         for c in await comm.path(session)) +
+					': ' + title)
+				done += 1
 
-	async def traverse(nursery, root):
+	async def traverse(nursery, root, limit):
 		title = str(await root.date(session)) + ' ' + root.title
 		with exceptions(root.url):
 			async with root.walk(session, 2) as children:
 				async for comm in children:
-					nursery.start_soon(visit, title, comm)
-
-	async def start(nursery):
-		for root in roots:
-			nursery.start_soon(traverse, nursery, root)
-			await sleep(0)
+					await nursery.start(visit, title, comm, limit)
 
 	try:
+		limit = CapacityLimiter(100)
 		async with open_nursery() as nursery:
-			nursery.start_soon(start, nursery)
+			for root in roots:
+				nursery.start_soon(traverse, nursery, root, limit)
+				report(done, len(nursery.child_tasks), last)
+				await sleep(0)
 			while nursery.child_tasks:
 				report(done, len(nursery.child_tasks), last)
 				await sleep(0)
@@ -624,9 +627,9 @@ async def main():
 		await collect_types(session, els)
 
 #		elec = els[-2]
-#		pprint(await elec.single(session, '226'), max_width=w)
+#		pprint(await elec.single(session, 226), max_width=w)
 #		print()
-#		pprint(await elec.aggregate(session, '227'), max_width=w)
+#		pprint(await elec.aggregate(session, 227), max_width=w)
 #		return
 
 #		url = "http://www.vybory.izbirkom.ru/region/izbirkom?action=show&vrn=411401372131&region=11&prver=0&pronetvd=null&sub_region=99"
