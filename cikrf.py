@@ -11,8 +11,9 @@ from math            import inf, sqrt
 from operator        import mul
 from simplejsonseq   import dump, load
 from socket          import gaierror as GAIError
-from trio            import BrokenResourceError, CapacityLimiter, Queue, \
-                            TASK_STATUS_IGNORED, open_nursery, run, sleep
+from trio            import BrokenResourceError, CapacityLimiter, \
+                            TASK_STATUS_IGNORED, open_memory_channel, \
+                            open_nursery, run, sleep
 from urllib.parse    import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 from weakref         import WeakValueDictionary
 
@@ -393,29 +394,24 @@ class Commission:
 
 	@asynccontextmanager
 	async def walk(self, session, depth=inf):
-		queue = Queue(0)
+		send, recv = open_memory_channel(0)
 
-		async with open_nursery() as nursery:
-			async def visit(comm, depth):
-				if depth <= 0: return
-				await queue.put(comm)
-				children = await comm.children(session)
-				for child in children:
-					nursery.start_soon(visit, child, depth-1)
-					await sleep(0)
+		async with recv, open_nursery() as nursery:
+			async def visit(send, comm, depth):
+				assert depth > 0
+				async with send:
+					await send.send(self)
+					children = await comm.children(session)
+					if depth <= 1: return
+					for child in children:
+						nursery.start_soon(visit,
+						                   send.clone(),
+						                   child,
+						                   depth - 1)
+						await sleep(0)
 
-			async def items():
-				nursery.start_soon(visit, self, depth)
-				while nursery.child_tasks:
-					try:
-						item = queue.get_nowait()
-					except WouldBlock:
-						pass
-					else:
-						yield item
-					await sleep(0)
-
-			yield items()
+			nursery.start_soon(visit, send, self, depth)
+			yield recv
 
 class Election(Commission):
 	__slots__ = ['title', 'place', 'root']
