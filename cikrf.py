@@ -68,7 +68,7 @@ def xstrings(node):
 
 def xnodata(page):
 	mess = page.xpath('.//text()[normalize-space()="Нет '
-	                  'данных для построения отчета.")]')
+	                  'данных для построения отчета."]')
 	return bool(mess)
 
 class Scope(Enum):
@@ -205,7 +205,7 @@ class Commission:
 		if not pivot:
 			return types
 
-		rows = pivot[0].xpath('ancestor::table[1]//tr')
+		rows = pivot[0].xpath('ancestor-or-self::table[1]//tr')
 		category = None
 		for row in rows:
 			if (row.xpath('.//*[@class="headers"]') or
@@ -384,24 +384,19 @@ class Commission:
 		return results
 
 	async def name(self, session):
-		page = await self.page(session, 0) # FIXME Any cached page would work
-		crumbs = page.find('table', height='80%').find('td')('a')
+		page = await self.xpage(session, 0) # FIXME Any cached page would work
+		crumbs = page.xpath('(.//table[@height="80%"]//td)[1]/a')
+		if len(crumbs)-1 == self.level:
+			return normalize(crumbs[-1].text)
+
 		# If the crumbs are absent, or if one of the crumbs is the
 		# empty string, we can't be sure we got them right, so use
 		# the fallback method.
-		if len(crumbs)-1 == self.level:
-			return normalize(crumbs[-1].string)
-
-		page = await self.page(session, 0)
-		caption = page.find(string=[
-			matches('наименование комиссии'),
-			matches('наименование избирательной комиссии')])
-		if caption is None:
-			assert nodata(page)
+		caption = page.xpath('.//*[normalize-space()="Наименование комиссии" or normalize-space()="Наименование Избирательной комиссии"]')
+		if not caption:
+			assert xnodata(page)
 			return None
-		return normalize(caption.find_parent('td')
-		                        .find_next_sibling('td')
-		                        .string)
+		return normalize(caption[0].xpath('ancestor-or-self::td[1]/following-sibling::td')[0].text)
 
 	async def path(self, session):
 		if self.parent is not None:
@@ -411,10 +406,9 @@ class Commission:
 		return ppath + [await self.name(session)]
 
 	async def children(self, session):
-		page = await self.page(session, 0) # FIXME Any cached page would work
-		return (self._cache.commission(
-				self, urljoin(self.url, o['value']))
-		        for o in page('option') if o.attrs.get('value'))
+		page = await self.xpage(session, 0) # FIXME Any cached page would work
+		return (self._cache.commission(self, urljoin(self.url, o.get('value')))
+		        for o in page.xpath('.//option') if o.get('value') is not None)
 
 	@asynccontextmanager
 	async def walk(self, session, depth=inf):
@@ -424,7 +418,7 @@ class Commission:
 			async def visit(send, comm, depth):
 				assert depth > 0
 				async with send:
-					await send.send(self)
+					await send.send(comm)
 					children = await comm.children(session)
 					if depth <= 1: return
 					for child in children:
@@ -471,14 +465,12 @@ class Election(Commission):
 		return cls(**data)
 
 	async def date(self, session):
-		page = await self.page(session, 0)
-		capt = page.find(string=matches('дата голосования'))
-		if capt is None:
-			assert nodata(page)
+		page = await self.xpage(session, 0)
+		capt = page.xpath('.//*[text()[normalize-space()="Дата голосования"]]')
+		if not capt:
+			assert xnodata(page)
 			return None
-		return todate(capt.find_parent('td')
-		                  .find_next_sibling('td')
-		                  .string)
+		return todate(capt[0].xpath('ancestor-or-self::td[1]/following-sibling::td')[0].text)
 
 	@classmethod
 	async def search(cls, session, start=Date(1991, 6, 12), end=None, *,
@@ -516,7 +508,7 @@ class Election(Commission):
 		place = []
 		for a in doc.xpath('.//a[@class="vibLink"]'):
 			assert len(a) <= 1
-			cell,  = a.xpath('ancestor::tr[1]/td[1]')
+			cell,  = a.xpath('ancestor-or-self::tr[1]/td[1]')
 			anode, = cell.xpath('.//b') or (None,)
 			if anode is not None:
 				place = ([normalize(anode.text)]
@@ -588,18 +580,18 @@ async def collect_types(session, roots):
 
 				sing = [await comm.single(session, t)
 					for t, n in ts if not n.startswith('Сводн')]
-				aggr = [await comm.aggregate(session, t)
-					for t, n in ts if n.startswith('Сводн')]
+				#aggr = [await comm.aggregate(session, t)
+				#	for t, n in ts if n.startswith('Сводн')]
 
 				pprint((comm.url, await comm.path(session), await comm.results(session)), max_width=160)
 
 				skeys = [frozenset(v.name for v in res.votes)
 					 for res in sing if res]
-				akeys = [frozenset(v.name for v in ress.popitem()[1].votes)
-					 for ress in aggr if ress]
-				assert list(sorted(set(skeys), key=str)) == list(sorted(skeys, key=str))
-				assert list(sorted(set(akeys), key=str)) == list(sorted(akeys, key=str))
-				assert set(akeys) <= set(skeys)
+				#akeys = [frozenset(v.name for v in ress.popitem()[1].votes)
+				#	 for ress in aggr if ress]
+				#assert list(sorted(set(skeys), key=str)) == list(sorted(skeys, key=str))
+				#assert list(sorted(set(akeys), key=str)) == list(sorted(akeys, key=str))
+				#assert set(akeys) <= set(skeys)
 
 				last = ('/'.join(c if c is not None else '!'
 					         for c in await comm.path(session)) +
@@ -609,7 +601,7 @@ async def collect_types(session, roots):
 	async def traverse(nursery, root, limit):
 		title = str(await root.date(session)) + ' ' + root.title
 		with exceptions(root.url):
-			async with root.walk(session, 2) as children:
+			async with root.walk(session, 3) as children:
 				async for comm in children:
 					await nursery.start(visit, title, comm, limit)
 
