@@ -5,7 +5,7 @@ from enum import Enum
 from itertools import product
 from lxml.etree import XPath  # type:ignore
 from lxml.html import document_fromstring  # type: ignore
-from typing import Dict, Generator, Iterable, List, Type, TypeVar, Optional
+from typing import Dict, Generator, Iterable, List, Tuple, Type, TypeVar, Optional
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 from warnings import warn
 
@@ -44,19 +44,25 @@ _OPTIONS = XPath(".//option")
 
 
 class Commission(object):
-    __slots__ = ("parent", "_tree", "url")
+    __slots__ = ("number", "parent", "_tree", "url")
 
-    def __init__(self, parent, url):
+    def __init__(
+        self,
+        parent: List[Tuple[Optional[int], Optional[str]]],
+        number: Optional[int],
+        url: str,
+    ) -> None:
         self.parent = parent
+        self.number = number
         self.url = url
         self._tree = None
 
     def __str__(self) -> str:
-        return self.url
+        return "<{}>".format(self.url)
 
     def __repr__(self) -> str:
-        return "{}(parent={!r}, url={!r})".format(
-            type(self).__qualname__, self.parent, self.url
+        return "{}(parent={!r}, number={!r}, url={!r})".format(
+            type(self).__qualname__, self.parent, self.number, self.url
         )
 
     def __eq__(self, other) -> bool:
@@ -77,19 +83,23 @@ class Commission(object):
         if name:
             return _normalizespace(name[0])
         else:
-            warn("unknown commission name ({})".format(self.url), stacklevel=2)
+            warn("{}: Unknown commission name".format(self), stacklevel=2)
             return None
 
     @property
-    def path(self) -> List[str]:
-        return self.parent + [self.name]
+    def path(self) -> List[Tuple[Optional[int], Optional[str]]]:
+        return self.parent + [(self.number, self.name)]
 
     @property
     def children(self) -> Iterable["Commission"]:
         if self._tree is None:
             raise AttributeError("children")
         return [
-            Commission(parent=self.path, url=urljoin(self.url, o.get("value")))
+            Commission(
+                parent=self.path,
+                number=int(o.text.split()[0]) if o.text.split()[0].isdigit() else None,
+                url=urljoin(self.url, o.get("value")),
+            )
             for o in _OPTIONS(self._tree)
             if o.get("value")
         ]
@@ -145,14 +155,14 @@ class Election(Commission):
     def __init__(
         self, title: str, date: Date, scope: Scope, object: Object, **kwargs
     ) -> None:
-        super(Election, self).__init__(parent=[], **kwargs)
+        super(Election, self).__init__(parent=[], number=None, **kwargs)
         self.title = title
         self.date = date
         self.scope = scope
         self.object = object
 
     def __str__(self) -> str:
-        return "{} ({})".format(self.url, self.title)
+        return "<{}> ({})".format(self.url, self.title)
 
     def __repr__(self) -> str:
         return "{}(title={!r}, date={!r}, scope={!r}, object={!r}, url={!r})".format(
