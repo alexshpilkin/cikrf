@@ -7,8 +7,9 @@ from lxml.etree import XPath  # type:ignore
 from lxml.html import document_fromstring  # type: ignore
 from typing import Dict, Generator, Iterable, List, Type, TypeVar, Optional
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
+from warnings import warn
 
-# __all__ = ["Scope", "Object", "Election", "run"]  # FIXME
+# __all__ = ["Commission", "Scope", "Object", "Election", "run"]  # FIXME
 
 _E = TypeVar("_E", bound="Election")
 _T = TypeVar("_T")
@@ -32,6 +33,66 @@ def _normalizespace(s: str) -> str:
 
 def _fromdate(date: Date) -> str:
     return date.strftime("%d.%m.%Y")
+
+
+_NAME = XPath(
+    './/*[normalize-space()="Наименование комиссии" or '
+    'normalize-space()="Наименование Избирательной комиссии"]/'
+    "ancestor-or-self::td[1]/following-sibling::td/text()"
+)
+_OPTIONS = XPath(".//option")
+
+
+class Commission(object):
+    __slots__ = ("parent", "_tree", "url")
+
+    def __init__(self, parent, url):
+        self.parent = parent
+        self.url = url
+        self._tree = None
+
+    def __str__(self) -> str:
+        return self.url
+
+    def __repr__(self) -> str:
+        return "{}(parent={!r}, url={!r})".format(
+            type(self).__qualname__, self.parent, self.url
+        )
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, Election):
+            return NotImplemented
+        return self.url == other.url
+
+    def load(self) -> Action[None]:
+        if self._tree is not None:
+            return
+        self._tree = document_fromstring((yield self.url))
+
+    @property
+    def name(self) -> str:
+        if self._tree is None:
+            raise AttributeError("name")
+        name = _NAME(self._tree)
+        if name:
+            return _normalizespace(name[0])
+        else:
+            warn("unknown commission name ({})".format(self.url), stacklevel=2)
+            return None
+
+    @property
+    def path(self) -> List[str]:
+        return self.parent + [self.name]
+
+    @property
+    def children(self) -> Iterable["Commission"]:
+        if self._tree is None:
+            raise AttributeError("children")
+        return [
+            Commission(parent=self.path, url=urljoin(self.url, o.get("value")))
+            for o in _OPTIONS(self._tree)
+            if o.get("value")
+        ]
 
 
 class Scope(Enum):
@@ -78,22 +139,25 @@ _BOLD = XPath(".//b")
 _TEXT = XPath("text()")
 
 
-class Election(object):
-    __slots__ = ("date", "name", "object", "scope", "url")
+class Election(Commission):
+    __slots__ = ("date", "object", "scope", "title", "url")
 
     def __init__(
-        self, name: str, date: Date, scope: Scope, object: Object, url: str
+        self, title: str, date: Date, scope: Scope, object: Object, **kwargs
     ) -> None:
-        self.name = name
+        super(Election, self).__init__(parent=[], **kwargs)
+        self.title = title
         self.date = date
         self.scope = scope
         self.object = object
-        self.url = url
+
+    def __str__(self) -> str:
+        return "{} ({})".format(self.url, self.title)
 
     def __repr__(self) -> str:
-        return "{}(name={!r}, date={!r}, scope={!r}, object={!r}, url={!r})".format(
+        return "{}(title={!r}, date={!r}, scope={!r}, object={!r}, url={!r})".format(
             type(self).__qualname__,
-            self.name,
+            self.title,
             self.date,
             self.scope,
             self.object,
@@ -146,7 +210,7 @@ class Election(object):
 
             results.append(
                 cls(
-                    name=_normalizespace(a.text),
+                    title=_normalizespace(a.text),
                     date=date,
                     scope=scope,
                     object=object,
@@ -175,12 +239,50 @@ class Election(object):
         return results
 
 
-def run(action: Action[_T]) -> _T:  # FIXME
-    from requests import get
+# FIXME test code
+from gzip import open as gzipopen
+from requests import get
+from urllib.parse import quote
 
+
+def run(action: Action[_T]) -> _T:
     try:
         text = None
         while True:
             text = get(action.send(text)).text
     except StopIteration as result:
         return result.value
+
+
+def run_cached(action: Action[_T]) -> _T:
+    try:
+        text = None
+        url = None
+        while True:
+            url = action.send(text)
+            print(url)
+            cache = "cache/" + quote(url, safe="") + ".gz"
+            try:
+                with gzipopen(cache, "rt") as f:
+                    text = f.read()
+            except FileNotFoundError:
+                text = get(url).text
+                with gzipopen(cache, "wt") as f:
+                    f.write(text)
+    except StopIteration as result:
+        return result.value
+
+
+def visit(c: Commission, level: int) -> None:
+    if level <= 0:
+        return
+    run_cached(c.load())
+    print(c.path)
+    for cc in c.children:
+        visit(cc, level - 1)
+
+
+es = run_cached(Election.search(end=Date(2019, 8, 20)))
+for e in es:
+    print("***", e.date, "-", e.title, "***")
+    visit(e, 4)
