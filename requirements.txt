@@ -1,0 +1,5 @@
+asks
+beautifulsoup4
+simplejsonseq
+trio
+pretty-py3
